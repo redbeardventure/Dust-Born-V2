@@ -8,6 +8,7 @@ extends RefCounted
 ##   walls:    [{points, closed, width}]
 ##   props:    [{type, pos, scale, rot, seed}]
 ##   lights:   [{pos, radius, color, energy, flicker}]
+##   npcs:     [{name, pos, weapon, loot, disposition, patrol: PackedVector2Array}]
 ## NOTE: packed arrays are never mutated in place, only replaced, so undo snapshots stay valid.
 
 const MAP_DIR := "user://maps"
@@ -193,6 +194,35 @@ static var PROPS: Dictionary = {
 }
 
 
+## NPC option lists (key -> label). Order is the dropdown order.
+const NPC_WEAPONS := {
+	"none": "Unarmed",
+	"dagger": "Dagger",
+	"sword": "Sword",
+	"axe": "Axe",
+	"spear": "Spear",
+	"bow": "Bow",
+	"staff": "Staff",
+	"pistol": "Pistol",
+	"rifle": "Rifle",
+}
+const NPC_LOOT := {
+	"none": "Nothing",
+	"gold": "Gold coins",
+	"potion": "Potion",
+	"food": "Food",
+	"ammo": "Ammo",
+	"gems": "Gems",
+	"key": "Key",
+	"scroll": "Scroll",
+	"weapon": "Weapon drop",
+}
+const NPC_DISPOSITIONS := {
+	"friendly": "Friendly",
+	"hostile": "Hostile",
+}
+
+
 static func theme_terrain(theme: String) -> Array:
 	if THEMES.has(theme):
 		return THEMES[theme]["terrain"]
@@ -218,6 +248,7 @@ static func empty(theme: String = "fantasy") -> Dictionary:
 		"walls": [],
 		"props": [],
 		"lights": [],
+		"npcs": [],
 	}
 
 
@@ -237,6 +268,12 @@ static func new_prop(type: String, pos: Vector2, scale: float = 1.0, rot: float 
 
 static func new_light(pos: Vector2, radius: float = 300.0, color: Color = Color(1, 0.75, 0.45), energy: float = 1.0, flicker: bool = true) -> Dictionary:
 	return {"pos": pos, "radius": radius, "color": color, "energy": energy, "flicker": flicker}
+
+
+## patrol = closed area (3+ points) the NPC wanders inside; empty = stands still.
+## head = index into head_art.gd (hats, then hair styles); -1 = none.
+static func new_npc(npc_name: String, pos: Vector2, weapon: String = "none", loot: String = "none", disposition: String = "friendly", patrol: PackedVector2Array = PackedVector2Array(), head: int = -1) -> Dictionary:
+	return {"name": npc_name, "pos": pos, "weapon": weapon, "loot": loot, "disposition": disposition, "patrol": patrol, "head": head}
 
 
 # ---------------------------------------------------------------- textures
@@ -338,6 +375,7 @@ static func to_dict(d: Dictionary) -> Dictionary:
 		"walls": [],
 		"props": [],
 		"lights": [],
+		"npcs": [],
 	}
 	for p in d["polygons"]:
 		out["polygons"].append({"type": p["type"], "points": _pack(p["points"])})
@@ -350,6 +388,9 @@ static func to_dict(d: Dictionary) -> Dictionary:
 		var lp: Vector2 = l["pos"]
 		var lc: Color = l["color"]
 		out["lights"].append({"pos": [lp.x, lp.y], "radius": l["radius"], "color": lc.to_html(false), "energy": l["energy"], "flicker": l["flicker"]})
+	for n in d.get("npcs", []):
+		var np: Vector2 = n["pos"]
+		out["npcs"].append({"name": n["name"], "pos": [snappedf(np.x, 0.01), snappedf(np.y, 0.01)], "weapon": n["weapon"], "loot": n["loot"], "disposition": n["disposition"], "patrol": _pack(n["patrol"]), "head": n.get("head", -1)})
 	return out
 
 
@@ -367,6 +408,15 @@ static func from_dict(j: Dictionary) -> Dictionary:
 		d["props"].append(new_prop(str(pr.get("type", "tree")), _v2(pr.get("pos"), Vector2.ZERO), float(pr.get("scale", 1.0)), float(pr.get("rot", 0.0)), int(pr.get("seed", 0))))
 	for l in j.get("lights", []):
 		d["lights"].append(new_light(_v2(l.get("pos"), Vector2.ZERO), float(l.get("radius", 300.0)), Color(str(l.get("color", "ffbf73"))), float(l.get("energy", 1.0)), bool(l.get("flicker", false))))
+	for n in j.get("npcs", []):
+		var weapon := str(n.get("weapon", "none"))
+		var loot := str(n.get("loot", "none"))
+		var disp := str(n.get("disposition", "friendly"))
+		d["npcs"].append(new_npc(str(n.get("name", "NPC")), _v2(n.get("pos"), Vector2.ZERO),
+				weapon if NPC_WEAPONS.has(weapon) else "none",
+				loot if NPC_LOOT.has(loot) else "none",
+				disp if NPC_DISPOSITIONS.has(disp) else "friendly",
+				_unpack(n.get("patrol", [])), int(n.get("head", -1))))
 	return d
 
 

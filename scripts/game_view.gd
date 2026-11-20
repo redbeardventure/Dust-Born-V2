@@ -1,7 +1,7 @@
 extends Node2D
 ## Play-test screen: loads the working map with collisions and lighting and spawns a player.
 
-const HatArt := preload("res://scripts/hat_art.gd")
+const HeadArt := preload("res://scripts/head_art.gd")
 
 var renderer: MapRenderer
 var player: Player
@@ -51,27 +51,28 @@ func _build_hat_picker(layer: CanvasLayer) -> void:
 	var title := Label.new()
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(title)
-	var row := HBoxContainer.new()
+	var row := GridContainer.new()
+	row.columns = 6
 	box.add_child(row)
 	var group := ButtonGroup.new()
-	for i in HatArt.count():
+	for i in HeadArt.count():
 		var b := Button.new()
 		b.toggle_mode = true
 		b.button_group = group
 		b.focus_mode = Control.FOCUS_NONE  # keep arrow keys for walking
 		b.custom_minimum_size = Vector2(56, 56)
-		b.tooltip_text = HatArt.style_name(i)
-		b.button_pressed = i == Player.hat_style
+		b.tooltip_text = HeadArt.style_name(i)
+		b.button_pressed = i == Player.head_style
 		var icon := Control.new()
 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		icon.draw.connect(func() -> void: HatArt.draw(icon, i, icon.size * 0.5, -PI * 0.5, 1.45))
+		icon.draw.connect(func() -> void: HeadArt.draw(icon, i, icon.size * 0.5, -PI * 0.5, 1.45))
 		b.add_child(icon)
 		b.pressed.connect(func() -> void:
-			player.set_hat(i)
-			title.text = "Hat: %s" % HatArt.style_name(i))
+			player.set_head(i)
+			title.text = HeadArt.style_name(i))
 		row.add_child(b)
-	title.text = "Hat: %s" % HatArt.style_name(Player.hat_style)
+	title.text = HeadArt.style_name(Player.head_style)
 
 
 func _unhandled_input(event: InputEvent) -> void:

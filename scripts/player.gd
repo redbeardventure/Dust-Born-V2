@@ -3,16 +3,20 @@ extends CharacterBody2D
 ## Simple top-down test character with a lantern and a follow camera.
 
 const SPEED := 240.0
-const HatArt := preload("res://scripts/hat_art.gd")
+const TURN_RATE := 14.0  # how fast the character turns to face its direction (higher = snappier)
+const HeadArt := preload("res://scripts/head_art.gd")
 
-## Selected hat; static so the choice is kept between play-test sessions.
-static var hat_style := 0
+## Selected head (hat or hair, see head_art.gd); static so the choice is kept between play-test sessions.
+static var head_style := 0
 
 var map_size := Vector2(2048, 1728)
 var facing := Vector2.DOWN
 
 
 func _ready() -> void:
+	# Top-down: no floor/gravity. The default "grounded" mode treats walls and props as slopes and
+	# snaps to a floor, which makes the character hop and bounce along obstacles.
+	motion_mode = CharacterBody2D.MOTION_MODE_FLOATING
 	var cs := CollisionShape2D.new()
 	var circle := CircleShape2D.new()
 	circle.radius = 10.0
@@ -64,7 +68,11 @@ func _physics_process(delta: float) -> void:
 			dir = to_next
 	velocity = dir.normalized() * speed
 	if dir != Vector2.ZERO:
-		facing = dir.normalized()
+		# Turn toward the move direction over a few frames instead of snapping.
+		var target := dir.normalized()
+		if facing.dot(target) < -0.99:
+			facing = facing.rotated(0.2)  # slerp has no defined path for an exact reversal
+		facing = facing.slerp(target, minf(1.0, TURN_RATE * delta)).normalized()
 		queue_redraw()
 	var before := position
 	move_and_slide()
@@ -156,11 +164,40 @@ func _move_to(target: Vector2) -> void:
 	pts.remove_at(0)  # current cell
 	if _cell(target) == goal:
 		pts[pts.size() - 1] = target
-	_path = pts
+	_path = _smooth_path(position, pts)
 	_stuck = 0.0
 	_marker_pos = pts[pts.size() - 1]
 	_marker.visible = true
 	_marker.queue_redraw()
+
+
+## The grid path visits every 16px cell centre, which makes the character zig-zag and turn in steps.
+## This drops waypoints that can be skipped: from each point, jump to the furthest later waypoint
+## the character's collision circle can reach in a straight line.
+func _smooth_path(from: Vector2, pts: PackedVector2Array) -> PackedVector2Array:
+	const LOOKAHEAD := 48
+	var space := get_world_2d().direct_space_state
+	var q := PhysicsShapeQueryParameters2D.new()
+	var shape := CircleShape2D.new()
+	shape.radius = 10.5
+	q.shape = shape
+	q.exclude = [get_rid()]
+	var out := PackedVector2Array()
+	var anchor := from
+	var i := 0
+	while i < pts.size():
+		var j := mini(i + LOOKAHEAD, pts.size() - 1)
+		while j > i:
+			q.transform = Transform2D(0.0, anchor)
+			q.motion = pts[j] - anchor
+			var r := space.cast_motion(q)
+			if r.size() >= 1 and r[0] >= 1.0:
+				break
+			j -= 1
+		out.append(pts[j])
+		anchor = pts[j]
+		i = j + 1
+	return out
 
 
 func _clear_path() -> void:
@@ -182,14 +219,14 @@ func _draw() -> void:
 	_draw_hat()
 
 
-## Draws the selected hat (see hat_art.gd) turned to `facing`, with a face dot peeking out the front.
+## Draws the selected hat or hair turned to `facing`, with a face dot peeking out the front.
 func _draw_hat() -> void:
-	HatArt.draw(self, hat_style, Vector2.ZERO, facing.angle())
-	var face := facing * (HatArt.brim_front(hat_style) - 0.3)
+	HeadArt.draw(self, head_style, Vector2.ZERO, facing.angle())
+	var face := facing * (HeadArt.front(head_style) - 0.3)
 	draw_circle(face, 2.2, Color("e8c9a0"))
 	draw_arc(face, 2.2, 0.0, TAU, 10, Color(0.12, 0.08, 0.04, 0.9), 1.0)
 
 
-func set_hat(idx: int) -> void:
-	hat_style = clampi(idx, 0, HatArt.count() - 1)
+func set_head(idx: int) -> void:
+	head_style = clampi(idx, 0, HeadArt.count() - 1)
 	queue_redraw()

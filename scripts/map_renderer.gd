@@ -10,6 +10,7 @@ var lighting_enabled := true
 var _terrain := Node2D.new()
 var _walls := Node2D.new()
 var _props := Node2D.new()
+var _npcs := Node2D.new()
 var _lights := Node2D.new()
 var _mod := CanvasModulate.new()
 var _flicker: Array = []
@@ -128,11 +129,13 @@ func _init() -> void:
 	_terrain.name = "Terrain"
 	_walls.name = "Walls"
 	_props.name = "Props"
+	_npcs.name = "Npcs"
 	_lights.name = "Lights"
 	add_child(_mod)
 	add_child(_terrain)
 	add_child(_walls)
 	add_child(_props)
+	add_child(_npcs)
 	add_child(_lights)
 
 
@@ -161,6 +164,7 @@ func rebuild_all() -> void:
 	rebuild_terrain()
 	rebuild_walls()
 	rebuild_props()
+	rebuild_npcs()
 	refresh_ambient()
 
 
@@ -504,6 +508,23 @@ func rebuild_props() -> void:
 				body.add_child(cs)
 				node.add_child(body)
 	rebuild_lights()
+
+
+# ---------------------------------------------------------------- npcs
+
+## NPCs only wander when physics_enabled is on (play-test); in the editor they stand still.
+func rebuild_npcs() -> void:
+	_clear(_npcs)
+	for n in data.get("npcs", []):
+		var node := NpcNode.new()
+		node.npc_name = str(n["name"])
+		node.weapon = str(n["weapon"])
+		node.disposition = str(n["disposition"])
+		node.patrol = n["patrol"]
+		node.head = int(n.get("head", -1))
+		node.animate = physics_enabled
+		node.position = n["pos"]
+		_npcs.add_child(node)
 
 
 # ---------------------------------------------------------------- lights
