@@ -4,9 +4,9 @@ extends Node2D
 ## Tools: Select, Polygon, Rectangle, Wall, Prop, Light, Spawn, NPC.
 ## Right or middle mouse drag = pan, wheel = zoom, arrows = pan. Ctrl+Z / Ctrl+Y undo / redo, Ctrl+S save.
 
-enum Tool { SELECT, POLYGON, RECT, WALL, PROP, LIGHT, SPAWN, NPC }
+enum Tool { SELECT, POLYGON, RECT, WALL, PROP, LIGHT, SPAWN, NPC, OPENING }
 
-const TOOL_NAMES := ["Select (V)", "Polygon (P)", "Rectangle (R)", "Wall (W)", "Prop (O)", "Light (L)", "Spawn (T)", "NPC (N)"]
+const TOOL_NAMES := ["Select (V)", "Polygon (P)", "Rectangle (R)", "Wall (W)", "Prop (O)", "Light (L)", "Spawn (T)", "NPC (N)", "Door / Window (D)"]
 const PATROL_HINT := "PATROL AREA: click to add points. Click the first point, press Enter or right-click to close. Backspace removes the last point, Esc cancels."
 const TOOL_HINTS := [
 	"SELECT: click to select, drag to move. Drag white handles to edit points. Double-click an edge to add a point, right-click a point to remove it. Del deletes. [ ] change draw order.",
@@ -17,6 +17,7 @@ const TOOL_HINTS := [
 	"LIGHT: click to place a light with the settings on the left.",
 	"SPAWN: click to set the player start position.",
 	"NPC: click to place a non-player character with the settings at the top. Select it, then use 'Draw patrol area' to set where it wanders.",
+	"DOOR / WINDOW: click on a wall to set a door or window into it (it snaps to the wall and cuts a gap). Windows let light through; doors can be opened or kicked open in play-test.",
 ]
 const GRID := 32.0
 const HANDLE_PX := 7.0
@@ -77,7 +78,7 @@ var radius_slider: HSlider
 var energy_slider: HSlider
 var light_color: ColorPickerButton
 var flicker_check: CheckBox
-var light_box: VBoxContainer
+var light_box: PanelContainer
 var wall_width: SpinBox
 var snap_check: CheckBox
 var grid_check: CheckBox
@@ -95,11 +96,15 @@ var terrain_bar: PanelContainer
 var npc_bar: PanelContainer
 var npc_name_edit: LineEdit
 var npc_weapon_opt: OptionButton
+var opening_bar: PanelContainer
+var opening_kind_opt: OptionButton
+var opening_width: SpinBox
 var npc_head_opt: OptionButton
 var npc_loot_opt: OptionButton
 var npc_disp_opt: OptionButton
 var patrol_btn: Button
 var clear_patrol_btn: Button
+var scene_panel: PanelContainer
 var top_stack: HFlowContainer
 var file_label: Label
 var status_label: Label
@@ -111,7 +116,7 @@ func _ready() -> void:
 	data = MapData.working
 
 	renderer = MapRenderer.new()
-	renderer.lighting_enabled = false
+	renderer.lighting_enabled = true  # matches the "Lighting preview" checkbox default
 	add_child(renderer)
 	renderer.build(data)
 
@@ -129,7 +134,8 @@ func _ready() -> void:
 	camera.make_current()
 
 	_build_ui()
-	_set_palette(str(data.get("theme", "fantasy")))
+	_set_palette("all")  # the theme no longer filters terrain/props; every item is listed
+	_sync_theme_opt()
 	_fit_camera()
 	_sync_ui()
 
@@ -248,14 +254,126 @@ func _build_tool_bar() -> void:
 		col.add_child(b)
 		tool_buttons.append(b)
 	tool_buttons[0].button_pressed = true
-	# Anchor to the right edge, vertically centred.
-	bar.anchor_left = 1.0
-	bar.anchor_right = 1.0
+	# Anchor to the left edge, vertically centred.
+	bar.anchor_left = 0.0
+	bar.anchor_right = 0.0
 	bar.anchor_top = 0.5
 	bar.anchor_bottom = 0.5
-	bar.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	bar.grow_horizontal = Control.GROW_DIRECTION_END
 	bar.grow_vertical = Control.GROW_DIRECTION_BOTH
-	bar.offset_right = -8
+	bar.offset_left = 8
+
+
+## Settings / file / save / undo / redo / play icon buttons in the top-left corner of the screen.
+func _build_history_bar() -> void:
+	var bar := PanelContainer.new()
+	bar.mouse_filter = Control.MOUSE_FILTER_STOP
+	ui.add_child(bar)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	bar.add_child(row)
+	# Gear: shows / hides the Scene Settings panel below the bar.
+	var gear := Button.new()
+	gear.toggle_mode = true
+	gear.custom_minimum_size = Vector2(44, 44)
+	gear.tooltip_text = "Scene Settings"
+	gear.focus_mode = Control.FOCUS_NONE
+	gear.toggled.connect(func(on: bool) -> void: scene_panel.visible = on)
+	var gear_icon := Control.new()
+	gear_icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	gear_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	gear_icon.draw.connect(_draw_history_icon.bind(gear_icon, "gear"))
+	gear.add_child(gear_icon)
+	row.add_child(gear)
+	# "..." file menu
+	var menu := MenuButton.new()
+	menu.custom_minimum_size = Vector2(44, 44)
+	menu.tooltip_text = "File menu"
+	menu.flat = false  # MenuButton is flat by default; match the other icon buttons
+	menu.focus_mode = Control.FOCUS_NONE
+	var popup := menu.get_popup()
+	popup.add_item("Save As...", 0)
+	popup.add_item("Open...", 1)
+	popup.add_item("New", 2)
+	popup.add_separator()
+	popup.add_item("Main menu", 3)
+	popup.id_pressed.connect(_on_file_menu)
+	var menu_icon := Control.new()
+	menu_icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	menu_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	menu_icon.draw.connect(_draw_history_icon.bind(menu_icon, "menu"))
+	menu.add_child(menu_icon)
+	row.add_child(menu)
+	var defs := [["Save (Ctrl+S)", "save", _save], ["Undo (Ctrl+Z)", "undo", undo], ["Redo (Ctrl+Y)", "redo", redo], ["Play-test this map", "play", _play]]
+	for d in defs:
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(44, 44)
+		b.tooltip_text = d[0]
+		b.focus_mode = Control.FOCUS_NONE
+		b.pressed.connect(d[2])
+		var ic := Control.new()
+		ic.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		ic.draw.connect(_draw_history_icon.bind(ic, d[1]))
+		b.add_child(ic)
+		row.add_child(b)
+	bar.offset_left = 8
+	bar.offset_top = 8
+
+
+func _on_file_menu(id: int) -> void:
+	match id:
+		0:
+			_open_dialog("save")
+		1:
+			_open_dialog("open")
+		2:
+			_new_map()
+		3:
+			_to_menu()
+
+
+## Curved arrow: points left for undo, mirrored (points right) for redo. "play" draws a play triangle.
+func _draw_history_icon(c: Control, kind: String) -> void:
+	var u := minf(c.size.x, c.size.y) / 44.0
+	var o := (c.size - Vector2(44, 44) * u) * 0.5
+	var m := kind == "redo"
+	var P := func(x: float, y: float) -> Vector2:
+		return o + Vector2(44.0 - x if m else x, y) * u
+	var col := Color(0.95, 0.95, 0.95)
+	if kind == "gear":  # cog: toothed ring with a hole
+		var cen: Vector2 = P.call(22, 22)
+		var teeth := PackedVector2Array()
+		for i in 32:
+			var a := TAU * float(i) / 32.0
+			var r := (13.0 if (i / 2) % 2 == 0 else 9.5) * u  # 8 teeth, 2 points each
+			teeth.append(cen + Vector2(cos(a), sin(a)) * r)
+		c.draw_colored_polygon(teeth, col)
+		c.draw_circle(cen, 4.5 * u, Color(0.2, 0.22, 0.26))
+		return
+	if kind == "menu":  # three dots
+		for x in [12.0, 22.0, 32.0]:
+			c.draw_circle(P.call(x, 22), 2.8 * u, col)
+		return
+	if kind == "save":  # floppy disk
+		var blue := Color(0.45, 0.65, 0.95)
+		c.draw_rect(Rect2(P.call(10, 9), Vector2(24, 26) * u), blue)
+		c.draw_rect(Rect2(P.call(10, 9), Vector2(24, 26) * u), Color(0.1, 0.12, 0.2), false, 1.5 * u)
+		c.draw_rect(Rect2(P.call(15, 9), Vector2(14, 8) * u), col)  # shutter
+		c.draw_rect(Rect2(P.call(24, 11), Vector2(3, 5) * u), Color(0.2, 0.25, 0.4))
+		c.draw_rect(Rect2(P.call(14, 22), Vector2(16, 13) * u), col)  # label
+		c.draw_line(P.call(17, 26), P.call(27, 26), Color(0.5, 0.5, 0.55), 1.2 * u)
+		c.draw_line(P.call(17, 30), P.call(27, 30), Color(0.5, 0.5, 0.55), 1.2 * u)
+		return
+	if kind == "play":
+		c.draw_colored_polygon(PackedVector2Array([P.call(15, 10), P.call(15, 34), P.call(35, 22)]), Color(0.4, 0.9, 0.5))
+		return
+	var arc := PackedVector2Array()
+	for i in 17:
+		var a := PI + (PI * 1.45) * float(i) / 16.0  # left side, over the top, down the right
+		arc.append(P.call(22.0 + cos(a) * 9.0, 24.0 + sin(a) * 9.0))
+	c.draw_polyline(arc, col, 3.0 * u)
+	c.draw_colored_polygon(PackedVector2Array([P.call(13, 32), P.call(7, 23), P.call(19, 23)]), col)
 
 
 ## Prop type / scale / rotation bar at the top of the screen. Shown while a prop is selected or the Prop tool is active
@@ -302,6 +420,94 @@ func _option(keys_to_labels: Dictionary) -> OptionButton:
 		o.add_item(str(keys_to_labels[k]))
 	o.item_selected.connect(func(_i: int) -> void: _on_npc_changed())
 	return o
+
+
+## Door / window bar. Shown while an opening is selected or the Door / Window tool is active.
+func _build_opening_bar() -> void:
+	opening_bar = PanelContainer.new()
+	opening_bar.visible = false
+	_top_stack().add_child(opening_bar)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	opening_bar.add_child(row)
+	opening_kind_opt = OptionButton.new()
+	for k in MapData.OPENING_KINDS:
+		opening_kind_opt.add_item(str(MapData.OPENING_KINDS[k][0]))
+	opening_kind_opt.item_selected.connect(_on_opening_kind)
+	_row(row, "Type", opening_kind_opt, 40)
+	opening_width = _spin(row, "Width", 24, 200, 48, 4, _on_opening_width)
+
+
+func _opening_kind() -> String:
+	return MapData.OPENING_KINDS.keys()[maxi(opening_kind_opt.selected, 0)]
+
+
+func _on_opening_kind(i: int) -> void:
+	var kind: String = MapData.OPENING_KINDS.keys()[i]
+	var def_w: float = MapData.OPENING_KINDS[kind][1]
+	if _ui_lock:
+		return
+	if sel_kind == "opening":
+		push_undo()
+		data["openings"][sel_idx]["kind"] = kind
+		data["openings"][sel_idx]["width"] = def_w
+		renderer.rebuild_openings()
+	opening_width.set_value_no_signal(def_w)
+
+
+func _on_opening_width(v: float) -> void:
+	if _ui_lock or sel_kind != "opening":
+		return
+	push_undo("opening_w")
+	data["openings"][sel_idx]["width"] = v
+	renderer.rebuild_openings()
+
+
+## Finds the wall centre line closest to `pos` (within reach). Returns {pos, rot, thick}, or {} if none is close.
+func _wall_snap(pos: Vector2) -> Dictionary:
+	var best := {}
+	var best_d := 22.0 / camera.zoom.x + 8.0
+	for w in data["walls"]:
+		if w.get("style", "wall") == "rail":
+			continue
+		var pts: PackedVector2Array = w["points"]
+		var segs := pts.size() if w["closed"] else pts.size() - 1
+		for i in segs:
+			var a := pts[i]
+			var b := pts[(i + 1) % pts.size()]
+			if a.distance_to(b) < 0.01:
+				continue
+			var c := Geometry2D.get_closest_point_to_segment(pos, a, b)
+			var d := pos.distance_to(c)
+			if d < best_d:
+				best_d = d
+				best = {"pos": c, "rot": (b - a).angle(), "thick": float(w["width"])}
+	return best
+
+
+func _place_opening(p: Vector2) -> void:
+	push_undo()
+	var s := _wall_snap(p)
+	var o := MapData.new_opening(_opening_kind(), s.get("pos", p), s.get("rot", 0.0), opening_width.value, s.get("thick", 12.0))
+	data["openings"].append(o)
+	renderer.rebuild_openings()
+	_select("opening", data["openings"].size() - 1)
+
+
+## Local-space test: is `pos` over opening `o`?
+func _in_opening(o: Dictionary, pos: Vector2) -> bool:
+	var l: Vector2 = (pos - o["pos"]).rotated(-float(o["rot"]))
+	return absf(l.x) < float(o["width"]) * 0.5 + 4.0 and absf(l.y) < maxf(float(o["thick"]) * 0.5, 8.0) + 6.0 / camera.zoom.x
+
+
+func _opening_corners(o: Dictionary, grow: float = 0.0) -> PackedVector2Array:
+	var hx := float(o["width"]) * 0.5 + grow
+	var hy := maxf(float(o["thick"]), 10.0) * 0.5 + grow
+	var r := float(o["rot"])
+	var c: Vector2 = o["pos"]
+	return PackedVector2Array([
+		c + Vector2(-hx, -hy).rotated(r), c + Vector2(hx, -hy).rotated(r),
+		c + Vector2(hx, hy).rotated(r), c + Vector2(-hx, hy).rotated(r)])
 
 
 ## NPC settings bar. Shown while an NPC is selected or the NPC tool is active
@@ -375,10 +581,10 @@ func _top_stack() -> HFlowContainer:
 		top_stack.add_theme_constant_override("h_separation", 6)
 		top_stack.add_theme_constant_override("v_separation", 4)
 		ui.add_child(top_stack)
-		# Spans the space between the left panel (280px) and the tool bar on the right.
+		# Spans from the icon bar in the top-left corner to the right edge.
 		top_stack.anchor_right = 1.0
-		top_stack.offset_left = 290
-		top_stack.offset_right = -64
+		top_stack.offset_left = 348  # leaves room for the settings/undo/redo buttons in the top-left corner
+		top_stack.offset_right = -8
 		top_stack.offset_top = 8
 	return top_stack
 
@@ -488,6 +694,15 @@ func _draw_tool_icon(c: Control, tool_id: int) -> void:
 		Tool.SPAWN:  # flag
 			c.draw_line(P.call(14, 9), P.call(14, 36), white, w)
 			c.draw_colored_polygon(PackedVector2Array([P.call(14, 9), P.call(34, 15), P.call(14, 22)]), Color(0.9, 0.3, 0.3))
+		Tool.OPENING:  # wall with a door gap and a window
+			var wall_c := Color(0.6, 0.57, 0.5)
+			c.draw_rect(Rect2(P.call(6, 20), Vector2(9, 5) * u), wall_c)
+			c.draw_rect(Rect2(P.call(29, 20), Vector2(9, 5) * u), wall_c)
+			c.draw_rect(Rect2(P.call(15, 21), Vector2(14, 3) * u), Color("7a5230"))
+			c.draw_arc(P.call(15, 22.5), 14.0 * u, -PI * 0.5, 0.0, 10, Color(1, 1, 1, 0.35), 1.0 * u)
+			c.draw_rect(Rect2(P.call(10, 8), Vector2(24, 7) * u), Color(0.62, 0.84, 0.95, 0.6))
+			c.draw_rect(Rect2(P.call(10, 8), Vector2(24, 7) * u), Color("4a3a2c"), false, 1.5 * u)
+			c.draw_line(P.call(22, 8), P.call(22, 15), Color("4a3a2c"), 1.5 * u)
 		Tool.NPC:  # person with a dashed patrol loop
 			var green := Color("4caf5a")
 			c.draw_circle(P.call(22, 18), 7.0 * u, green)
@@ -503,59 +718,43 @@ func _build_ui() -> void:
 	ui.layer = 2
 	add_child(ui)
 
-	var panel := PanelContainer.new()
-	panel.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE)
-	panel.offset_right = 280
-	ui.add_child(panel)
-	var scroll := ScrollContainer.new()
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	panel.add_child(scroll)
-	var box := VBoxContainer.new()
-	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	box.add_theme_constant_override("separation", 4)
-	scroll.add_child(box)
-	var root := box
+	var box: Control
 
-	var title := Label.new()
-	title.text = "MAP EDITOR"
-	title.add_theme_font_size_override("font_size", 18)
-	box.add_child(title)
+	# Scene settings: a panel under the gear button in the top-left bar (hidden until the gear is pressed).
+	# Placed right of the left tool bar so it never covers the tools.
+	scene_panel = PanelContainer.new()
+	scene_panel.visible = false
+	scene_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	scene_panel.custom_minimum_size.x = 280
+	ui.add_child(scene_panel)
+	scene_panel.offset_left = 72
+	scene_panel.offset_top = 68  # just below the top-left icon bar
+	# Fully opaque background (the default panel style is see-through).
+	var scene_style := StyleBoxFlat.new()
+	scene_style.bg_color = Color(0.13, 0.14, 0.17, 1.0)
+	scene_style.border_color = Color(0.3, 0.32, 0.38, 1.0)
+	scene_style.set_border_width_all(1)
+	scene_style.set_corner_radius_all(4)
+	scene_style.set_content_margin_all(8)
+	scene_panel.add_theme_stylebox_override("panel", scene_style)
+	var scene_box := VBoxContainer.new()
+	scene_box.add_theme_constant_override("separation", 4)
+	scene_panel.add_child(scene_box)
+	var scene_title := Label.new()
+	scene_title.text = "Scene Settings"
+	scene_title.add_theme_color_override("font_color", Color(0.95, 0.85, 0.5))
+	scene_box.add_child(scene_title)
+	box = scene_box
 	file_label = Label.new()
 	file_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
 	box.add_child(file_label)
-
-	# Theme
-	box = _section(root, "Theme")
+	# Theme = the map's base background only; each entry shows a swatch of its ground.
 	theme_opt = OptionButton.new()
-	for t in MapData.THEME_ORDER:
-		theme_opt.add_item("All items" if t == "all" else str(MapData.THEMES[t]["label"]))
+	theme_opt.add_theme_constant_override("icon_max_width", PROP_ICON_PX)
+	for t in _theme_keys():
+		theme_opt.add_icon_item(_terrain_icon(MapData.THEMES[t]["background"]), str(MapData.THEMES[t]["label"]))
 	theme_opt.item_selected.connect(_on_theme_selected)
-	box.add_child(theme_opt)
-	_button(box, "Apply theme ground + ambient", _apply_theme_look)
-
-	_build_tool_bar()
-
-	_build_terrain_bar()
-	_build_wall_bar()
-	_build_prop_bar()
-	_build_npc_bar()
-
-	# Lights
-	light_box = VBoxContainer.new()
-	root.add_child(light_box)
-	box = _section(light_box, "Light")
-	radius_slider = _slider(box, "Radius", 60, 900, 300, 10, func(_v: float) -> void: _on_light_changed())
-	energy_slider = _slider(box, "Energy", 0.1, 3.0, 1.0, 0.05, func(_v: float) -> void: _on_light_changed())
-	light_color = ColorPickerButton.new()
-	light_color.color = Color(1.0, 0.75, 0.45)
-	light_color.custom_minimum_size.y = 24
-	light_color.color_changed.connect(func(_c: Color) -> void: _on_light_changed())
-	_row(box, "Color", light_color)
-	flicker_check = _check(box, "Flicker", true, func(_on: bool) -> void: _on_light_changed())
-	_update_light_box()
-
-	# Scene / view
-	box = _section(root, "Scene", true)
+	_row(box, "Theme", theme_opt)
 	ambient_btn = ColorPickerButton.new()
 	ambient_btn.color = data["ambient"]
 	ambient_btn.custom_minimum_size.y = 24
@@ -564,31 +763,40 @@ func _build_ui() -> void:
 	var sz: Vector2 = data["size"]
 	width_spin = _spin(box, "Map width", 256, 8192, sz.x, 64, func(_v: float) -> void: _on_size_changed())
 	height_spin = _spin(box, "Map height", 256, 8192, sz.y, 64, func(_v: float) -> void: _on_size_changed())
-	light_check = _check(box, "Lighting preview", false, _on_lighting_toggled)
+	light_check = _check(box, "Lighting preview", true, _on_lighting_toggled)
 	snap_check = _check(box, "Snap to grid (Alt = toggle)", false)
-	grid_check = _check(box, "Show grid", true)
+	grid_check = _check(box, "Show grid", false)
+
+	_build_tool_bar()
+	_build_history_bar()
+
+	_build_terrain_bar()
+	_build_wall_bar()
+	_build_prop_bar()
+	_build_npc_bar()
+	_build_opening_bar()
+
+	# Light settings bar at the top (shown for a selected light or the Light tool).
+	light_box = PanelContainer.new()
+	light_box.visible = false
+	_top_stack().add_child(light_box)
+	var lrow := HBoxContainer.new()
+	lrow.add_theme_constant_override("separation", 8)
+	light_box.add_child(lrow)
+	radius_slider = _slider(lrow, "Radius", 60, 900, 300, 10, func(_v: float) -> void: _on_light_changed())
+	radius_slider.custom_minimum_size.x = 110
+	energy_slider = _slider(lrow, "Energy", 0.1, 3.0, 1.0, 0.05, func(_v: float) -> void: _on_light_changed())
+	energy_slider.custom_minimum_size.x = 110
+	light_color = ColorPickerButton.new()
+	light_color.color = Color(1.0, 0.75, 0.45)
+	light_color.custom_minimum_size = Vector2(48, 24)
+	light_color.color_changed.connect(func(_c: Color) -> void: _on_light_changed())
+	_row(lrow, "Color", light_color, 40)
+	flicker_check = _check(lrow, "Flicker", true, func(_on: bool) -> void: _on_light_changed())
+	_update_light_box()
 
 	_build_selection_bar()
 	top_stack.move_child(sel_bar, 0)
-	_button(root, "Fit view (F)", _fit_camera)
-
-	# Map actions
-	box = _section(root, "Map", true)
-	var mgrid := GridContainer.new()
-	mgrid.columns = 2
-	box.add_child(mgrid)
-	_button(mgrid, "Undo", undo)
-	_button(mgrid, "Redo", redo)
-	_button(mgrid, "Save (Ctrl+S)", _save)
-	_button(mgrid, "Save as...", _open_dialog.bind("save"))
-	_button(mgrid, "Open...", _open_dialog.bind("open"))
-	_button(mgrid, "New blank", _new_map)
-	_button(mgrid, "Load sample", _load_sample)
-	_button(mgrid, "Clear props", _clear_props)
-	box = root
-	var play := _button(box, "▶  Play-test this map", _play)
-	play.custom_minimum_size.y = 34
-	_button(box, "Main menu", _to_menu)
 
 	# Status bar
 	var bar := PanelContainer.new()
@@ -600,7 +808,7 @@ func _build_ui() -> void:
 	status_label.custom_minimum_size.x = 600
 	bar.add_child(status_label)
 	bar.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	bar.offset_left = 290
+	ui.move_child(scene_panel, -1)  # draw (and take clicks) above the tool bar it may overlap
 
 	file_dialog = FileDialog.new()
 	file_dialog.access = FileDialog.ACCESS_USERDATA
@@ -642,10 +850,10 @@ func _visible_rect() -> Rect2:
 
 func _fit_camera() -> void:
 	var sz: Vector2 = data["size"]
-	var vs := get_viewport_rect().size - Vector2(290, 60)
+	var vs := get_viewport_rect().size - Vector2(120, 140)  # room for the tool bar, top bars and status bar
 	var z := clampf(minf(vs.x / sz.x, vs.y / sz.y), 0.1, 4.0)
 	camera.zoom = Vector2(z, z)
-	camera.position = sz * 0.5 - Vector2(145.0 / z, 0)
+	camera.position = sz * 0.5
 
 
 func _zoom_at(f: float) -> void:
@@ -701,6 +909,8 @@ func _rebuild_kind(kind: String) -> void:
 			renderer.rebuild_lights()
 		"npc":
 			renderer.rebuild_npcs()
+		"opening":
+			renderer.rebuild_openings()
 
 
 func _vertex_at(pts: PackedVector2Array, pos: Vector2) -> int:
@@ -738,6 +948,9 @@ func _pick(pos: Vector2) -> Array:
 	for i in range(data["npcs"].size() - 1, -1, -1):
 		if pos.distance_to(data["npcs"][i]["pos"]) < maxf(14.0, 12.0 / z):
 			return ["npc", i]
+	for i in range(data["openings"].size() - 1, -1, -1):
+		if _in_opening(data["openings"][i], pos):
+			return ["opening", i]
 	for i in range(data["props"].size() - 1, -1, -1):
 		var pr: Dictionary = data["props"][i]
 		var rad: float = MapData.PROPS.get(pr["type"], MapData.PROPS["tree"])["radius"] * float(pr["scale"])
@@ -792,7 +1005,7 @@ func _replace_data(nd: Dictionary) -> void:
 	drawing_patrol = false
 	drag = ""
 	renderer.build(data)
-	_set_palette(str(data.get("theme", "fantasy")))
+	_sync_theme_opt()
 	_ui_lock = true
 	ambient_btn.color = data["ambient"]
 	var sz: Vector2 = data["size"]
@@ -848,6 +1061,10 @@ func _sync_ui() -> void:
 			npc_loot_opt.select(maxi(MapData.NPC_LOOT.keys().find(n["loot"]), 0))
 			npc_disp_opt.select(maxi(MapData.NPC_DISPOSITIONS.keys().find(n["disposition"]), 0))
 			npc_head_opt.select(clampi(int(n.get("head", -1)) + 1, 0, HeadArt.count()))
+		"opening":
+			var o: Dictionary = data["openings"][sel_idx]
+			opening_kind_opt.select(maxi(MapData.OPENING_KINDS.keys().find(o["kind"]), 0))
+			opening_width.set_value_no_signal(o["width"])
 	_ui_lock = false
 	sel_bar.visible = sel_kind != ""
 	_update_light_box()
@@ -864,6 +1081,8 @@ func _update_light_box() -> void:
 		wall_bar.visible = sel_kind == "wall" or cur_tool == Tool.WALL or cur_tool == Tool.RECT
 	if prop_bar != null:
 		prop_bar.visible = sel_kind == "prop" or cur_tool == Tool.PROP
+	if opening_bar != null:
+		opening_bar.visible = sel_kind == "opening" or cur_tool == Tool.OPENING
 	if npc_bar != null:
 		npc_bar.visible = sel_kind == "npc" or cur_tool == Tool.NPC
 		patrol_btn.disabled = sel_kind != "npc"
@@ -948,31 +1167,37 @@ func _set_palette(p: String) -> void:
 		prop_opt.add_icon_item(_prop_icon(k), str(MapData.PROPS[k]["label"]))
 	terrain_opt.select(0)
 	prop_opt.select(0)
-	theme_opt.select(MapData.THEME_ORDER.find(p))
 
 
+## Themes listed in the Theme dropdown (every real theme; "all" is only a palette filter).
+func _theme_keys() -> Array:
+	return MapData.THEME_ORDER.filter(func(t) -> bool: return MapData.THEMES.has(t))
+
+
+## Points the Theme dropdown at the map's current background (prefers the map's own theme
+## when several themes share the same ground, e.g. grass).
+func _sync_theme_opt() -> void:
+	var keys := _theme_keys()
+	var bg := str(data.get("background", ""))
+	var cur := str(data.get("theme", ""))
+	var idx := -1
+	if keys.has(cur) and MapData.THEMES[cur]["background"] == bg:
+		idx = keys.find(cur)
+	else:
+		for i in keys.size():
+			if MapData.THEMES[keys[i]]["background"] == bg:
+				idx = i
+				break
+	theme_opt.select(idx)  # -1 = custom background not matching any theme
+
+
+## Changes only the map's base background (the ground under everything).
 func _on_theme_selected(i: int) -> void:
-	var p: String = MapData.THEME_ORDER[i]
-	if p != "all":
-		push_undo()
-		data["theme"] = p
-	_set_palette(p)
-	_sync_ui()
-
-
-## Sets the map's base ground and ambient light to the current theme's defaults.
-func _apply_theme_look() -> void:
-	var t := str(data.get("theme", "fantasy"))
-	if not MapData.THEMES.has(t):
-		return
+	var t: String = _theme_keys()[i]
 	push_undo()
+	data["theme"] = t
 	data["background"] = MapData.THEMES[t]["background"]
-	data["ambient"] = MapData.THEMES[t]["ambient"]
-	_ui_lock = true
-	ambient_btn.color = data["ambient"]
-	_ui_lock = false
 	renderer.rebuild_terrain()
-	renderer.refresh_ambient()
 
 
 func _wall_style() -> String:
@@ -1190,6 +1415,8 @@ func _on_mouse_motion(e: InputEventMouseMotion) -> void:
 			"npc":
 				drag_orig_points = _sel_points()
 				drag_orig_pos = data["npcs"][sel_idx]["pos"]
+			"opening":
+				drag_orig_pos = data["openings"][sel_idx]["pos"]
 		drag = "move" if drag == "move_pending" else "vertex"
 	var pos := _mw()
 	if drag == "move":
@@ -1258,6 +1485,8 @@ func _on_key(e: InputEventKey) -> void:
 			_set_tool(Tool.SPAWN)
 		KEY_N:
 			_set_tool(Tool.NPC)
+		KEY_D:
+			_set_tool(Tool.OPENING)
 
 
 func _left_press(e: InputEventMouseButton) -> void:
@@ -1280,6 +1509,8 @@ func _left_press(e: InputEventMouseButton) -> void:
 				_path_click(sp)
 			else:
 				_place_npc(sp)
+		Tool.OPENING:
+			_place_opening(pos)
 		Tool.SPAWN:
 			push_undo()
 			data["spawn"] = sp
@@ -1350,6 +1581,8 @@ func _select_press(pos: Vector2, dbl: bool) -> void:
 		"npc":
 			drag_orig_points = _sel_points()
 			drag_orig_pos = data["npcs"][sel_idx]["pos"]
+		"opening":
+			drag_orig_pos = data["openings"][sel_idx]["pos"]
 
 
 ## Moves the selection with the cursor. Follows the mouse exactly while dragging;
@@ -1375,6 +1608,16 @@ func _do_move(pos: Vector2, snap: bool = false) -> void:
 		"light":
 			data["lights"][sel_idx]["pos"] = drag_orig_pos + delta
 			renderer.rebuild_lights()
+		"opening":
+			# Slides along (and snaps to) the nearest wall; stays where it is dropped if no wall is close.
+			var o: Dictionary = data["openings"][sel_idx]
+			var target := drag_orig_pos + delta
+			var s := _wall_snap(target)
+			o["pos"] = s.get("pos", target)
+			if not s.is_empty():
+				o["rot"] = s["rot"]
+				o["thick"] = s["thick"]
+			renderer.rebuild_openings()
 		"npc":
 			# The patrol area travels with the NPC.
 			var moved := PackedVector2Array()
@@ -1475,7 +1718,7 @@ func _delete_selected() -> void:
 	if sel_kind == "" or drawing_patrol:
 		return
 	push_undo()
-	var key := {"polygon": "polygons", "wall": "walls", "prop": "props", "light": "lights", "npc": "npcs"}[sel_kind] as String
+	var key := {"polygon": "polygons", "wall": "walls", "prop": "props", "light": "lights", "npc": "npcs", "opening": "openings"}[sel_kind] as String
 	data[key].remove_at(sel_idx)
 	var kind := sel_kind
 	_select("", -1)
@@ -1483,7 +1726,7 @@ func _delete_selected() -> void:
 
 
 func _reorder(dir: int) -> void:
-	if sel_kind == "" or sel_kind == "light" or sel_kind == "npc":
+	if sel_kind == "" or sel_kind == "light" or sel_kind == "npc" or sel_kind == "opening":
 		return
 	var key := {"polygon": "polygons", "wall": "walls", "prop": "props"}[sel_kind] as String
 	var arr: Array = data[key]
@@ -1646,6 +1889,15 @@ func draw_overlay(o: Node2D) -> void:
 			o.draw_arc(mouse, radius_slider.value, 0.0, TAU, 48, Color(1, 0.85, 0.4, 0.5), lw)
 		Tool.POLYGON, Tool.WALL, Tool.RECT:
 			o.draw_circle(mouse, 3.0 / z, sel_col)
+		Tool.OPENING:
+			# Preview where the opening will land (snapped onto the nearest wall).
+			var raw := _mw()
+			var sn := _wall_snap(raw)
+			var ghost := MapData.new_opening(_opening_kind(), sn.get("pos", raw), sn.get("rot", 0.0), opening_width.value, sn.get("thick", 12.0))
+			var gc := _opening_corners(ghost)
+			gc.append(gc[0])
+			var gcol := Color(0.4, 1.0, 0.5, 0.9) if not sn.is_empty() else Color(1, 1, 1, 0.5)
+			o.draw_polyline(gc, gcol, 2.0 / z)
 		Tool.NPC:
 			if drawing_patrol:
 				o.draw_circle(mouse, 3.0 / z, sel_col)
@@ -1680,6 +1932,12 @@ func _draw_selection(o: Node2D, z: float, lw: float) -> void:
 			var pr: Dictionary = data["props"][sel_idx]
 			var rad: float = MapData.PROPS.get(pr["type"], MapData.PROPS["tree"])["radius"] * float(pr["scale"])
 			o.draw_arc(pr["pos"], rad + 4.0, 0.0, TAU, 32, col, 2.0 / z)
+		"opening":
+			if sel_idx >= data["openings"].size():
+				return
+			var oc := _opening_corners(data["openings"][sel_idx], 3.0)
+			oc.append(oc[0])
+			o.draw_polyline(oc, col, 2.0 / z)
 		"npc":
 			if sel_idx >= data["npcs"].size():
 				return

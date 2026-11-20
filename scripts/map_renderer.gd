@@ -11,6 +11,7 @@ var _terrain := Node2D.new()
 var _walls := Node2D.new()
 var _props := Node2D.new()
 var _npcs := Node2D.new()
+var _openings := Node2D.new()
 var _lights := Node2D.new()
 var _mod := CanvasModulate.new()
 var _flicker: Array = []
@@ -130,10 +131,12 @@ func _init() -> void:
 	_walls.name = "Walls"
 	_props.name = "Props"
 	_npcs.name = "Npcs"
+	_openings.name = "Openings"
 	_lights.name = "Lights"
 	add_child(_mod)
 	add_child(_terrain)
 	add_child(_walls)
+	add_child(_openings)
 	add_child(_props)
 	add_child(_npcs)
 	add_child(_lights)
@@ -162,7 +165,7 @@ func build(d: Dictionary) -> void:
 
 func rebuild_all() -> void:
 	rebuild_terrain()
-	rebuild_walls()
+	rebuild_openings()  # also rebuilds the walls, which are cut around openings
 	rebuild_props()
 	rebuild_npcs()
 	refresh_ambient()
@@ -221,6 +224,7 @@ func _build_water_blockers() -> void:
 				continue
 			pieces = _subtract_solid(pieces, polys[j]["points"])
 		var body := StaticBody2D.new()
+		body.collision_layer = 2  # layer 2 = water: blocks walking, not projectiles or line of sight
 		for piece in pieces:
 			if piece.size() < 3:
 				continue
@@ -399,6 +403,7 @@ func _edge_line(pts: PackedVector2Array, width: float, col: Color) -> Line2D:
 
 func rebuild_walls() -> void:
 	_clear(_walls)
+	var openings: Array = data.get("openings", [])
 	for w in data["walls"]:
 		var pts: PackedVector2Array = w["points"]
 		if pts.size() < 2:
@@ -414,39 +419,108 @@ func rebuild_walls() -> void:
 			rn.width = width
 			_walls.add_child(rn)
 			continue
-		var edge := Color(0.12, 0.1, 0.09)
-		var col_body := Color(0.52, 0.49, 0.44)
-		var hi := Color(0.7, 0.67, 0.6)
-		if style == "hull":
-			edge = Color(0.05, 0.05, 0.06)
-			col_body = Color(0.24, 0.26, 0.31)
-			hi = Color(0.38, 0.41, 0.48)
-		_walls.add_child(_wall_line(pts, closed, width + 8.0, Color(0, 0, 0, 0.28), Vector2(5, 7)))
-		_walls.add_child(_wall_line(pts, closed, width + 5.0, edge, Vector2.ZERO))
-		_walls.add_child(_wall_line(pts, closed, width, col_body, Vector2.ZERO))
-		_walls.add_child(_wall_line(pts, closed, width * 0.4, hi, Vector2.ZERO))
+		# Doors and windows cut a gap in the wall they sit on.
+		var cuts: Array = []
+		for o in openings:
+			if MapData.dist_to_path(o["pos"], pts, closed) < OPENING_SNAP:
+				cuts.append(o)
+		if cuts.is_empty():
+			_add_wall_piece(pts, closed, width, style)
+			continue
 		var path := PackedVector2Array(pts)
 		if closed:
 			path.append(pts[0])
-		var occ := OccluderPolygon2D.new()
-		occ.closed = false
-		occ.polygon = path
-		var lo := LightOccluder2D.new()
-		lo.occluder = occ
-		_walls.add_child(lo)
-		if physics_enabled:
-			var body := StaticBody2D.new()
-			for i in path.size() - 1:
-				var cs := CollisionShape2D.new()
-				var seg := SegmentShape2D.new()
-				seg.a = path[i]
-				seg.b = path[i + 1]
-				cs.shape = seg
-				body.add_child(cs)
-			_walls.add_child(body)
+		var pieces: Array = [path]
+		for o in cuts:
+			pieces = _cut_pieces(pieces, o["pos"], float(o["width"]) * 0.5)
+		for pc in pieces:
+			_add_wall_piece(pc, false, width, style, true)
 
 
-func _wall_line(pts: PackedVector2Array, closed: bool, width: float, col: Color, off: Vector2) -> Line2D:
+## How close (px) an opening must be to a wall's centre line to cut it.
+const OPENING_SNAP := 6.0
+
+
+static func _path_length(pts: PackedVector2Array) -> float:
+	var l := 0.0
+	for i in pts.size() - 1:
+		l += pts[i].distance_to(pts[i + 1])
+	return l
+
+
+## Removes the stretch of every open path in `pieces` that lies within `hw` of `center` along the wall.
+static func _cut_pieces(pieces: Array, center: Vector2, hw: float) -> Array:
+	var out: Array = []
+	for pc in pieces:
+		var pts: PackedVector2Array = pc
+		var best_i := -1
+		var best_d := OPENING_SNAP
+		for i in pts.size() - 1:
+			var d := center.distance_to(Geometry2D.get_closest_point_to_segment(center, pts[i], pts[i + 1]))
+			if d < best_d:
+				best_d = d
+				best_i = i
+		if best_i < 0:
+			out.append(pts)
+			continue
+		var a := pts[best_i]
+		var seg := pts[best_i + 1] - a
+		var seg_len := seg.length()
+		if seg_len < 0.01:
+			out.append(pts)
+			continue
+		var dir := seg / seg_len
+		var t := clampf((center - a).dot(dir), 0.0, seg_len)
+		var first := PackedVector2Array()
+		for k in range(0, best_i + 1):
+			first.append(pts[k])
+		first.append(a + dir * maxf(t - hw, 0.0))
+		var second := PackedVector2Array([a + dir * minf(t + hw, seg_len)])
+		for k in range(best_i + 1, pts.size()):
+			second.append(pts[k])
+		if _path_length(first) > 1.0:
+			out.append(first)
+		if _path_length(second) > 1.0:
+			out.append(second)
+	return out
+
+
+## Draws one wall (or one piece of a cut wall) with its shadow, light occluder and collision.
+## `flat_ends` squares off the ends (used where a door/window gap was cut) so the wall stops exactly at the frame.
+func _add_wall_piece(pts: PackedVector2Array, closed: bool, width: float, style: String, flat_ends: bool = false) -> void:
+	var edge := Color(0.12, 0.1, 0.09)
+	var col_body := Color(0.52, 0.49, 0.44)
+	var hi := Color(0.7, 0.67, 0.6)
+	if style == "hull":
+		edge = Color(0.05, 0.05, 0.06)
+		col_body = Color(0.24, 0.26, 0.31)
+		hi = Color(0.38, 0.41, 0.48)
+	_walls.add_child(_wall_line(pts, closed, width + 8.0, Color(0, 0, 0, 0.28), Vector2(5, 7), flat_ends))
+	_walls.add_child(_wall_line(pts, closed, width + 5.0, edge, Vector2.ZERO, flat_ends))
+	_walls.add_child(_wall_line(pts, closed, width, col_body, Vector2.ZERO, flat_ends))
+	_walls.add_child(_wall_line(pts, closed, width * 0.4, hi, Vector2.ZERO, flat_ends))
+	var path := PackedVector2Array(pts)
+	if closed:
+		path.append(pts[0])
+	var occ := OccluderPolygon2D.new()
+	occ.closed = false
+	occ.polygon = path
+	var lo := LightOccluder2D.new()
+	lo.occluder = occ
+	_walls.add_child(lo)
+	if physics_enabled:
+		var body := StaticBody2D.new()
+		for i in path.size() - 1:
+			var cs := CollisionShape2D.new()
+			var seg := SegmentShape2D.new()
+			seg.a = path[i]
+			seg.b = path[i + 1]
+			cs.shape = seg
+			body.add_child(cs)
+		_walls.add_child(body)
+
+
+func _wall_line(pts: PackedVector2Array, closed: bool, width: float, col: Color, off: Vector2, flat_ends: bool = false) -> Line2D:
 	var line := Line2D.new()
 	line.points = pts
 	line.closed = closed
@@ -454,8 +528,9 @@ func _wall_line(pts: PackedVector2Array, closed: bool, width: float, col: Color,
 	line.default_color = col
 	line.position = off
 	line.joint_mode = Line2D.LINE_JOINT_ROUND
-	line.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	line.end_cap_mode = Line2D.LINE_CAP_ROUND
+	var cap := Line2D.LINE_CAP_NONE if flat_ends else Line2D.LINE_CAP_ROUND
+	line.begin_cap_mode = cap
+	line.end_cap_mode = cap
 	return line
 
 
@@ -508,6 +583,38 @@ func rebuild_props() -> void:
 				body.add_child(cs)
 				node.add_child(body)
 	rebuild_lights()
+
+
+# ---------------------------------------------------------------- doors and windows
+
+## Rebuilds the door/window nodes and the walls (walls are cut open where an opening sits).
+func rebuild_openings() -> void:
+	rebuild_walls()
+	_clear(_openings)
+	for o in data.get("openings", []):
+		var node := OpeningNode.new()
+		node.kind = str(o["kind"])
+		node.width = float(o["width"])
+		node.thick = float(o["thick"])
+		node.physics = physics_enabled
+		node.position = o["pos"]
+		node.rotation = float(o["rot"])
+		_openings.add_child(node)
+
+
+## Closest door to `pos` that is within its own reach, or null.
+func nearest_door(pos: Vector2, reach: float = 36.0) -> OpeningNode:
+	var best: OpeningNode = null
+	var best_d := INF
+	for n in _openings.get_children():
+		var op := n as OpeningNode
+		if op == null or op.kind != "door":
+			continue
+		var d := op.position.distance_to(pos)
+		if d < op.width * 0.5 + reach and d < best_d:
+			best_d = d
+			best = op
+	return best
 
 
 # ---------------------------------------------------------------- npcs

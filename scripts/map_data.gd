@@ -9,6 +9,7 @@ extends RefCounted
 ##   props:    [{type, pos, scale, rot, seed}]
 ##   lights:   [{pos, radius, color, energy, flicker}]
 ##   npcs:     [{name, pos, weapon, loot, disposition, patrol: PackedVector2Array}]
+##   openings: [{kind: "door"|"window", pos, rot, width, thick}]   (sit in a wall; the wall is cut open there)
 ## NOTE: packed arrays are never mutated in place, only replaced, so undo snapshots stay valid.
 
 const MAP_DIR := "user://maps"
@@ -201,9 +202,8 @@ const NPC_WEAPONS := {
 	"sword": "Sword",
 	"axe": "Axe",
 	"spear": "Spear",
-	"bow": "Bow",
-	"staff": "Staff",
 	"pistol": "Pistol",
+	"shotgun": "Shotgun",
 	"rifle": "Rifle",
 }
 const NPC_LOOT := {
@@ -220,6 +220,13 @@ const NPC_LOOT := {
 const NPC_DISPOSITIONS := {
 	"friendly": "Friendly",
 	"hostile": "Hostile",
+}
+
+
+## Wall openings: key -> [label, default width]
+const OPENING_KINDS := {
+	"door": ["Door", 48.0],
+	"window": ["Window", 64.0],
 }
 
 
@@ -249,6 +256,7 @@ static func empty(theme: String = "fantasy") -> Dictionary:
 		"props": [],
 		"lights": [],
 		"npcs": [],
+		"openings": [],
 	}
 
 
@@ -271,6 +279,11 @@ static func new_light(pos: Vector2, radius: float = 300.0, color: Color = Color(
 
 
 ## patrol = closed area (3+ points) the NPC wanders inside; empty = stands still.
+## A door or window set into a wall. rot = direction of the wall (radians), thick = wall width.
+static func new_opening(kind: String, pos: Vector2, rot: float = 0.0, width: float = 48.0, thick: float = 12.0) -> Dictionary:
+	return {"kind": kind, "pos": pos, "rot": rot, "width": width, "thick": thick}
+
+
 ## head = index into head_art.gd (hats, then hair styles); -1 = none.
 static func new_npc(npc_name: String, pos: Vector2, weapon: String = "none", loot: String = "none", disposition: String = "friendly", patrol: PackedVector2Array = PackedVector2Array(), head: int = -1) -> Dictionary:
 	return {"name": npc_name, "pos": pos, "weapon": weapon, "loot": loot, "disposition": disposition, "patrol": patrol, "head": head}
@@ -376,6 +389,7 @@ static func to_dict(d: Dictionary) -> Dictionary:
 		"props": [],
 		"lights": [],
 		"npcs": [],
+		"openings": [],
 	}
 	for p in d["polygons"]:
 		out["polygons"].append({"type": p["type"], "points": _pack(p["points"])})
@@ -391,6 +405,9 @@ static func to_dict(d: Dictionary) -> Dictionary:
 	for n in d.get("npcs", []):
 		var np: Vector2 = n["pos"]
 		out["npcs"].append({"name": n["name"], "pos": [snappedf(np.x, 0.01), snappedf(np.y, 0.01)], "weapon": n["weapon"], "loot": n["loot"], "disposition": n["disposition"], "patrol": _pack(n["patrol"]), "head": n.get("head", -1)})
+	for o in d.get("openings", []):
+		var op: Vector2 = o["pos"]
+		out["openings"].append({"kind": o["kind"], "pos": [snappedf(op.x, 0.01), snappedf(op.y, 0.01)], "rot": snappedf(float(o["rot"]), 0.0001), "width": o["width"], "thick": o["thick"]})
 	return out
 
 
@@ -417,6 +434,11 @@ static func from_dict(j: Dictionary) -> Dictionary:
 				loot if NPC_LOOT.has(loot) else "none",
 				disp if NPC_DISPOSITIONS.has(disp) else "friendly",
 				_unpack(n.get("patrol", [])), int(n.get("head", -1))))
+	for o in j.get("openings", []):
+		var kind := str(o.get("kind", "door"))
+		if not OPENING_KINDS.has(kind):
+			kind = "door"
+		d["openings"].append(new_opening(kind, _v2(o.get("pos"), Vector2.ZERO), float(o.get("rot", 0.0)), float(o.get("width", OPENING_KINDS[kind][1])), float(o.get("thick", 12.0))))
 	return d
 
 

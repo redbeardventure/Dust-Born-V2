@@ -1,5 +1,5 @@
 extends RefCounted
-## One list of "head" choices for the player: the hats first, then the hair styles.
+## One list of "head" choices for the player and NPCs: the hats first, then hair styles (no hat).
 
 const HatArt := preload("res://scripts/hat_art.gd")
 const HairArt := preload("res://scripts/hair_art.gd")
@@ -23,7 +23,14 @@ static func style_name(idx: int) -> String:
 static func front(idx: int) -> float:
 	if is_hat(idx):
 		return HatArt.brim_front(idx)
-	return HairArt.FRONT
+	return HairArt.front(idx - HatArt.count())
+
+
+## Colour of the face dot (skin, or the beard colour for the bearded style).
+static func face_color(idx: int) -> Color:
+	if is_hat(idx):
+		return HairArt.SKIN
+	return HairArt.face_color(idx - HatArt.count())
 
 
 static func draw(ci: CanvasItem, idx: int, pos: Vector2, angle: float, s: float = 1.0) -> void:
