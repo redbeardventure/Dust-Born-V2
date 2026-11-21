@@ -70,6 +70,11 @@ func _physics_process(delta: float) -> void:
 		queue_free()
 		return
 	if not wall.is_empty():
+		# Breakable props (barrels): the collision body is a child of the prop node.
+		var col: Object = wall.get("collider")
+		var owner_node: Node = (col as Node).get_parent() if col is Node else null
+		if owner_node != null and owner_node.is_in_group("breakable"):
+			owner_node.call("take_damage", damage, shooter if is_instance_valid(shooter) else null)
 		queue_free()
 		return
 
@@ -79,12 +84,37 @@ func _physics_process(delta: float) -> void:
 		queue_free()
 
 
-## Drawn in local space: +x is the direction of travel.
+func _ready() -> void:
+	# Glowing look: additive blending and unshaded, so shots stay bright on dark (night) maps
+	# instead of being dimmed by the ambient darkness.
+	var mat := CanvasItemMaterial.new()
+	mat.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+	mat.light_mode = CanvasItemMaterial.LIGHT_MODE_UNSHADED
+	material = mat
+	# Bullets also light the ground they pass over. Pellets skip this (7 per shot would be costly).
+	if kind == "bullet":
+		var glow := PointLight2D.new()
+		glow.texture = MapRenderer.light_texture()
+		glow.texture_scale = 0.3
+		glow.color = Color(1.0, 0.8, 0.45)
+		glow.energy = 0.9
+		add_child(glow)
+
+
+## Drawn in local space: +x is the direction of travel. Layers: soft halo, long fading tracer, bright core.
 func _draw() -> void:
-	match kind:
-		"pellet":
-			draw_line(Vector2(-5, 0), Vector2(0, 0), Color(1.0, 0.8, 0.4, 0.45), 1.5)
-			draw_circle(Vector2.ZERO, 1.4, Color(1.0, 0.92, 0.7))
-		_:
-			draw_line(Vector2(-10, 0), Vector2(0, 0), Color(1.0, 0.85, 0.4, 0.5), 2.0)  # tracer
-			draw_circle(Vector2.ZERO, 2.0, Color(1.0, 0.95, 0.7))
+	var pellet := kind == "pellet"
+	var tail := 14.0 if pellet else 26.0
+	var w := 2.5 if pellet else 3.5
+	var core := 2.2 if pellet else 3.0
+	# Halo
+	draw_circle(Vector2.ZERO, core * 3.0, Color(1.0, 0.6, 0.2, 0.12))
+	draw_circle(Vector2.ZERO, core * 1.8, Color(1.0, 0.75, 0.3, 0.25))
+	# Tracer: wide faint streak plus a thinner bright one, both fading toward the tail
+	var streak := PackedVector2Array([Vector2(-tail, 0), Vector2(0, 0)])
+	var fade := PackedColorArray([Color(1.0, 0.55, 0.15, 0.0), Color(1.0, 0.7, 0.25, 0.55)])
+	draw_polyline_colors(streak, fade, w * 2.0)
+	draw_polyline_colors(PackedVector2Array([Vector2(-tail * 0.7, 0), Vector2(0, 0)]),
+			PackedColorArray([Color(1.0, 0.85, 0.5, 0.0), Color(1.0, 0.95, 0.75, 0.95)]), w)
+	# Core
+	draw_circle(Vector2.ZERO, core, Color(1.0, 0.97, 0.85))

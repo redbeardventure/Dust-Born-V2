@@ -6,10 +6,11 @@ extends RefCounted
 ##   size: Vector2, ambient: Color, background: String (terrain key), spawn: Vector2
 ##   polygons: [{type, points: PackedVector2Array}]   (drawn in array order, later = on top)
 ##   walls:    [{points, closed, width}]
-##   props:    [{type, pos, scale, rot, seed}]
+##   props:    [{type, pos, scale, rot, seed, loot}]   (loot only matters for LOOT_PROPS)
 ##   lights:   [{pos, radius, color, energy, flicker}]
 ##   npcs:     [{name, pos, weapon, loot, disposition, patrol: PackedVector2Array}]
 ##   openings: [{kind: "door"|"window", pos, rot, width, thick}]   (sit in a wall; the wall is cut open there)
+##   roofs:    [{type (key of ROOFS), points: PackedVector2Array}]   (drawn above everything)
 ## NOTE: packed arrays are never mutated in place, only replaced, so undo snapshots stay valid.
 
 const MAP_DIR := "user://maps"
@@ -20,6 +21,25 @@ const DEFAULT_SIZE := Vector2(2048, 1728)
 static var working: Dictionary = {}
 static var current_path: String = DEFAULT_PATH
 static var _tex_cache: Dictionary = {}
+
+## Roof coverings for the roof layer. Same fields as TERRAIN (get_texture reads either table),
+## kept separate so they don't show up in the terrain dropdown.
+static var ROOFS: Dictionary = {
+	"roof_shingle": {"label": "Wood shingles", "a": Color("5e3f27"), "b": Color("84603c"), "freq": 0.06, "outline": Color(0.08, 0.05, 0.03, 0.9), "planks": false, "plank_w": 16, "vertical": false, "speckle": 0.02},
+	"roof_shake_dark": {"label": "Dark shakes", "a": Color("33271d"), "b": Color("4d3b2b"), "freq": 0.07, "outline": Color(0.04, 0.03, 0.02, 0.9), "planks": false, "plank_w": 16, "vertical": false, "speckle": 0.03},
+	"roof_tile_red": {"label": "Red clay tiles", "a": Color("9a4a33"), "b": Color("c26a47"), "freq": 0.05, "outline": Color(0.25, 0.08, 0.05, 0.9), "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.02},
+	# Barrel (Spanish) clay tiles: rows of half-round tiles, see get_texture's "barrel_tile" pattern.
+	"roof_barrel_red": {"label": "Barrel tiles: crimson", "a": Color("7e1826"), "b": Color("a82838"), "freq": 0.05, "outline": Color(0.22, 0.03, 0.06, 0.95), "planks": false, "barrel_tile": 16, "course": 16, "speckle": 0.0},
+	"roof_barrel_terracotta": {"label": "Barrel tiles: terracotta", "a": Color("a24c28"), "b": Color("cc723a"), "freq": 0.05, "outline": Color(0.28, 0.1, 0.04, 0.95), "planks": false, "barrel_tile": 16, "course": 16, "speckle": 0.0},
+	"roof_slate": {"label": "Grey slate", "a": Color("4d535c"), "b": Color("737b86"), "freq": 0.06, "outline": Color(0.07, 0.08, 0.1, 0.9), "planks": false, "plank_w": 16, "vertical": false, "speckle": 0.03},
+	"roof_thatch": {"label": "Thatch", "a": Color("8a7436"), "b": Color("b8a054"), "freq": 0.12, "outline": Color(0.2, 0.15, 0.05, 0.85), "planks": false, "speckle": 0.14},
+	"roof_tin": {"label": "Corrugated tin", "a": Color("6f747a"), "b": Color("9aa0a8"), "freq": 0.04, "outline": Color(0.1, 0.11, 0.12, 0.9), "planks": false, "plank_w": 16, "vertical": true, "speckle": 0.02},
+	"roof_train": {"label": "Train car roof (curved)", "shape": "round", "a": Color("3f444c"), "b": Color("5a606a"), "freq": 0.05, "outline": Color(0.05, 0.06, 0.07, 0.95), "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.04},
+	"roof_canvas": {"label": "Wagon canvas", "shape": "flat", "a": Color("cdbf9c"), "b": Color("e6dbbd"), "freq": 0.08, "outline": Color(0.38, 0.3, 0.18, 0.9), "planks": false, "speckle": 0.0},
+	"roof_canvas_dark": {"label": "Weathered canvas", "shape": "flat", "a": Color("8d826a"), "b": Color("b0a587"), "freq": 0.09, "outline": Color(0.2, 0.17, 0.1, 0.9), "planks": false, "speckle": 0.04},
+	"roof_canvas_blue": {"label": "Blue wagon tarp (curved)", "shape": "round", "a": Color("4c6b92"), "b": Color("7193bd"), "freq": 0.08, "outline": Color(0.12, 0.18, 0.3, 0.9), "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.0},
+	"roof_sod": {"label": "Sod / turf", "a": Color("4a6024"), "b": Color("74893a"), "freq": 0.05, "outline": Color(0.1, 0.15, 0.05, 0.85), "planks": false, "speckle": 0.08},
+}
 
 static var TERRAIN: Dictionary = {
 	"grass": {"label": "Grass", "a": Color("5a7026"), "b": Color("8b9d3b"), "freq": 0.018, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.0},
@@ -80,6 +100,11 @@ static var TERRAIN: Dictionary = {
 	"swamp_grass": {"label": "Swamp grass", "a": Color("4a5a28"), "b": Color("6d7a37"), "freq": 0.03, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.0},
 	"algae": {"label": "Overlay: algae", "a": Color(0.3, 0.55, 0.15, 0.45), "b": Color(0.5, 0.75, 0.25, 0.65), "freq": 0.05, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.0},
 	"mist": {"label": "Overlay: mist", "a": Color(0.8, 0.9, 0.85, 0.18), "b": Color(0.9, 0.95, 0.9, 0.35), "freq": 0.01, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.0},
+	# --- covered wagon / trail theme ---
+	"trail_dust": {"label": "Trail dust", "a": Color("847a6a"), "b": Color("a39883"), "freq": 0.025, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.09},
+	"wagon_ruts": {"label": "Wagon ruts (packed dirt)", "a": Color("6b5c45"), "b": Color("88785a"), "freq": 0.06, "outline": Color(0, 0, 0, 0), "blocks_scatter": true, "planks": false, "speckle": 0.1},
+	"wagon_boards": {"label": "Wagon: floor boards", "a": Color("6e4727"), "b": Color("93673b"), "freq": 0.04, "outline": Color(0.09, 0.05, 0.02, 0.9), "blocks_scatter": true, "planks": false, "plank_w": 16, "vertical": true, "speckle": 0.01},
+	"wagon_rug": {"label": "Wagon: green rug", "a": Color("2c5446"), "b": Color("3d6f5d"), "freq": 0.07, "outline": Color(0.8, 0.65, 0.3, 0.9), "blocks_scatter": true, "planks": false, "speckle": 0.0},
 }
 
 ## Each theme is a palette for the editor plus default ground/ambient for new maps.
@@ -90,7 +115,7 @@ static var THEMES: Dictionary = {
 		"background": "grass",
 		"ambient": Color(0.62, 0.64, 0.72),
 		"terrain": ["grass", "grass_dark", "dirt", "stone", "wood", "wood_planks_dark", "wood_worn", "wood_planks_light", "wood_deck", "wood_braced", "wood_vertical", "canvas_red", "dark", "carpet", "water", "shadow", "moss", "blood"],
-		"props": ["tree", "bush", "rock", "barrel", "crate", "table", "well", "torch"],
+		"props": ["tree", "bush", "rock", "barrel", "crate", "table", "well", "torch", "horse_chestnut", "horse_bay", "horse_black", "horse_grey", "horse_palomino", "cow_holstein", "cow_black", "cow_brown", "cow_hereford", "longhorn_tan", "longhorn_spotted", "longhorn_red"],
 	},
 	"train": {
 		"label": "Train / Rail yard",
@@ -120,7 +145,7 @@ static var THEMES: Dictionary = {
 		"background": "grass",
 		"ambient": Color(0.86, 0.86, 0.9),
 		"terrain": ["grass", "grass_dark", "dirt", "cobble", "plaza", "wood", "wood_planks_dark", "wood_worn", "wood_planks_light", "wood_deck", "wood_braced", "wood_vertical", "dock_weathered", "dock_vertical", "canvas_red", "stone", "carpet", "water", "shadow"],
-		"props": ["stall", "fountain", "lamppost", "cart", "haybale", "well", "tree", "bush", "barrel", "crate", "table", "torch", "rock"],
+		"props": ["stall", "fountain", "lamppost", "cart", "haybale", "horse_chestnut", "horse_bay", "horse_black", "horse_grey", "horse_palomino", "cow_holstein", "cow_black", "cow_brown", "cow_hereford", "longhorn_tan", "longhorn_spotted", "longhorn_red", "well", "tree", "bush", "barrel", "crate", "table", "torch", "rock"],
 		"scatter": ["tree", "rock", "bush"],
 	},
 	"coast": {
@@ -139,17 +164,28 @@ static var THEMES: Dictionary = {
 		"props": ["dead_tree", "reeds", "lilypad", "mushroom", "stump", "wisp", "rock", "bush", "crate", "barrel", "torch"],
 		"scatter": ["dead_tree", "stump", "reeds"],
 	},
+	# A wagon is built from parts: a "Wagon: floor boards" polygon for the bed, "Wagon side boards"
+	# walls round it, wheel props on both sides, a hitch at the front and a curved canvas roof.
+	"wagon": {
+		"label": "Covered wagon / Trail",
+		"background": "trail_dust",
+		"ambient": Color(0.9, 0.86, 0.8),
+		"terrain": ["trail_dust", "wagon_ruts", "grass", "grass_dark", "dirt", "mud", "wagon_boards", "wood_planks_dark", "wood_worn", "wagon_rug", "carpet", "canvas_red", "water", "shadow"],
+		"props": ["wagon_wheel", "wagon_hitch", "wagon_seat", "trunk", "bedroll", "sacks", "wagon_lantern", "horse_chestnut", "horse_bay", "horse_black", "horse_grey", "horse_palomino", "cow_holstein", "cow_black", "cow_brown", "cow_hereford", "longhorn_tan", "longhorn_spotted", "longhorn_red", "barrel", "crate", "campfire", "haybale", "stump", "rock", "bush", "tree"],
+		"scatter": ["tree", "rock", "bush"],
+	},
 }
 
-const THEME_ORDER := ["fantasy", "train", "desert", "snow", "town", "swamp", "coast", "all"]
+const THEME_ORDER := ["fantasy", "train", "desert", "snow", "town", "swamp", "coast", "wagon", "all"]
 
 ## style -> [label, default width]
 const WALL_STYLES := {
 	"wall": ["Stone wall", 12.0],
 	"hull": ["Train hull", 16.0],
 	"rail": ["Rail track", 70.0],
+	"wagon": ["Wagon side boards", 6.0],
 }
-const WALL_STYLE_ORDER := ["wall", "hull", "rail"]
+const WALL_STYLE_ORDER := ["wall", "hull", "rail", "wagon"]
 
 ## radius = selection/footprint size, solid = collision radius (0 = walk-through)
 static var PROPS: Dictionary = {
@@ -192,7 +228,34 @@ static var PROPS: Dictionary = {
 	"lilypad": {"label": "Lily pads", "radius": 24.0, "solid": 0.0},
 	"mushroom": {"label": "Mushrooms", "radius": 16.0, "solid": 0.0},
 	"wisp": {"label": "Will-o-wisp (light)", "radius": 14.0, "solid": 0.0, "light": {"r": 220.0, "c": Color(0.5, 1.0, 0.8), "e": 1.0}},
+	# covered wagon (parts are drawn with the wagon's length running along local y; hitch points to -y)
+	"wagon_wheel": {"label": "Wagon wheel (hub faces +x)", "radius": 24.0, "solid": 0.0, "rect": Vector2(10, 46)},
+	"wagon_hitch": {"label": "Wagon hitch (tongue + crossbars)", "radius": 60.0, "solid": 0.0},
+	"wagon_seat": {"label": "Wagon driver's seat", "radius": 34.0, "solid": 0.0},
+	"trunk": {"label": "Travel trunk", "radius": 18.0, "solid": 0.0, "rect": Vector2(32, 22)},
+	"bedroll": {"label": "Bedroll", "radius": 26.0, "solid": 0.0},
+	"sacks": {"label": "Grain sacks", "radius": 18.0, "solid": 12.0},
+	"wagon_lantern": {"label": "Wagon lantern (light)", "radius": 10.0, "solid": 0.0, "light": {"r": 230.0, "c": Color(1.0, 0.78, 0.45), "e": 1.0}},
+	# horses (saddled, seen from above; head points to -y, so rotate the prop to face them)
+	"horse_chestnut": {"label": "Horse: chestnut", "radius": 46.0, "solid": 0.0, "rect": Vector2(30, 84)},
+	"horse_bay": {"label": "Horse: bay", "radius": 46.0, "solid": 0.0, "rect": Vector2(30, 84)},
+	"horse_black": {"label": "Horse: black", "radius": 46.0, "solid": 0.0, "rect": Vector2(30, 84)},
+	"horse_grey": {"label": "Horse: dapple grey", "radius": 46.0, "solid": 0.0, "rect": Vector2(30, 84)},
+	"horse_palomino": {"label": "Horse: palomino", "radius": 46.0, "solid": 0.0, "rect": Vector2(30, 84)},
+	# cattle (head points to -y like the horses)
+	"cow_holstein": {"label": "Cow: black & white", "radius": 42.0, "solid": 0.0, "rect": Vector2(36, 74)},
+	"cow_black": {"label": "Cow: black", "radius": 42.0, "solid": 0.0, "rect": Vector2(36, 74)},
+	"cow_brown": {"label": "Cow: brown", "radius": 42.0, "solid": 0.0, "rect": Vector2(36, 74)},
+	"cow_hereford": {"label": "Cow: red, white face", "radius": 42.0, "solid": 0.0, "rect": Vector2(36, 74)},
+	"longhorn_tan": {"label": "Longhorn: tan", "radius": 50.0, "solid": 0.0, "rect": Vector2(36, 74)},
+	"longhorn_spotted": {"label": "Longhorn: spotted", "radius": 50.0, "solid": 0.0, "rect": Vector2(36, 74)},
+	"longhorn_red": {"label": "Longhorn: red", "radius": 50.0, "solid": 0.0, "rect": Vector2(36, 74)},
 }
+
+## Prop keys that are horses (drawn by PropNode._draw_horse).
+const HORSE_PROPS := ["horse_chestnut", "horse_bay", "horse_black", "horse_grey", "horse_palomino"]
+## Prop keys that are cattle (drawn by PropNode._draw_cow). They wander in play-test but can't be ridden.
+const COW_PROPS := ["cow_holstein", "cow_black", "cow_brown", "cow_hereford", "longhorn_tan", "longhorn_spotted", "longhorn_red"]
 
 
 ## NPC option lists (key -> label). Order is the dropdown order.
@@ -257,7 +320,14 @@ static func empty(theme: String = "fantasy") -> Dictionary:
 		"lights": [],
 		"npcs": [],
 		"openings": [],
+		"roofs": [],
 	}
+
+
+## A roof drawn above everything (see MapData.ROOFS). Hidden when the player is under it, and
+## cut open along the line of sight through windows and open doors.
+static func new_roof(type: String, pts: PackedVector2Array) -> Dictionary:
+	return {"type": type, "points": pts}
 
 
 static func new_poly(type: String, pts: PackedVector2Array) -> Dictionary:
@@ -268,10 +338,15 @@ static func new_wall(pts: PackedVector2Array, closed: bool, width: float = 12.0,
 	return {"points": pts, "closed": closed, "width": width, "style": style}
 
 
-static func new_prop(type: String, pos: Vector2, scale: float = 1.0, rot: float = 0.0, seed_v: int = -1) -> Dictionary:
+## Props that can hold loot (a key in NPC_LOOT). In play-test the player can select them;
+## barrels can be shot apart and crates opened with E, which drops the loot.
+const LOOT_PROPS := ["barrel", "crate", "trunk"]
+
+
+static func new_prop(type: String, pos: Vector2, scale: float = 1.0, rot: float = 0.0, seed_v: int = -1, loot: String = "none") -> Dictionary:
 	if seed_v < 0:
 		seed_v = randi()
-	return {"type": type, "pos": pos, "scale": scale, "rot": rot, "seed": seed_v}
+	return {"type": type, "pos": pos, "scale": scale, "rot": rot, "seed": seed_v, "loot": loot}
 
 
 static func new_light(pos: Vector2, radius: float = 300.0, color: Color = Color(1, 0.75, 0.45), energy: float = 1.0, flicker: bool = true) -> Dictionary:
@@ -294,7 +369,7 @@ static func new_npc(npc_name: String, pos: Vector2, weapon: String = "none", loo
 static func get_texture(type: String) -> Texture2D:
 	if _tex_cache.has(type):
 		return _tex_cache[type]
-	var def: Dictionary = TERRAIN.get(type, TERRAIN["grass"])
+	var def: Dictionary = TERRAIN.get(type, ROOFS.get(type, TERRAIN["grass"]))
 	var noise := FastNoiseLite.new()
 	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	noise.frequency = def["freq"]
@@ -338,6 +413,31 @@ static func get_texture(type: String) -> Texture2D:
 					c = c.darkened(0.5)
 				elif absi(lx - ly) < 2 or absi(lx + ly - (cs - 1)) < 2:
 					c = c.darkened(0.4)
+			elif def.has("barrel_tile"):
+				# Barrel (Spanish) clay tiles. Roofs map texture x along the eave and +y up the slope,
+				# so tiles form columns up the texture; each course's rounded end bulges down-slope (-y)
+				# over the course below and casts a shadow onto it. barrel_tile = tile width, course = length.
+				var tw: int = def["barrel_tile"]
+				var ch: int = def.get("course", tw)
+				var tcol := x / tw
+				var lx := x % tw
+				var ly := y % ch
+				var s := (float(lx) + 0.5) / float(tw) * 2.0 - 1.0  # -1..1 across the tile
+				var edge := 1.0 + float(ch) * 0.32 * s * s  # rounded lower end of this course's tile
+				var shaded := float(ly) < edge  # still on the tile below, under this one's overhang
+				var course := posmod(y / ch - (1 if shaded else 0), 256 / ch)  # wraps so the texture tiles seamlessly
+				var tone := float(absi(tcol * 7919 + course * 104729 + type.hash()) % 17) / 17.0 - 0.5
+				c = c.lightened(tone * 0.16) if tone > 0.0 else c.darkened(-tone * 0.22)
+				var k := sqrt(maxf(0.0, 1.0 - s * s))
+				c = c.darkened(0.42 * (1.0 - k))  # half-round tile: sides curve away into shade
+				if s > -0.6 and s < -0.2:
+					c = c.lightened(0.2 * k)  # glint along the curve (light from the left)
+				if shaded:
+					c = c.darkened(0.55 - 0.25 * float(ly) / edge)  # shadow under the overlapping tile end
+				elif float(ly) < edge + 1.5:
+					c = c.darkened(0.3)  # dark lip of the tile end
+				if lx == 0:
+					c = c.darkened(0.6)  # gap between tile columns
 			elif planks:
 				if y % 32 < 2:
 					c = c.darkened(0.45)
@@ -390,14 +490,20 @@ static func to_dict(d: Dictionary) -> Dictionary:
 		"lights": [],
 		"npcs": [],
 		"openings": [],
+		"roofs": [],
 	}
+	for r in d.get("roofs", []):
+		out["roofs"].append({"type": r["type"], "points": _pack(r["points"])})
 	for p in d["polygons"]:
 		out["polygons"].append({"type": p["type"], "points": _pack(p["points"])})
 	for w in d["walls"]:
 		out["walls"].append({"points": _pack(w["points"]), "closed": w["closed"], "width": w["width"], "style": w.get("style", "wall")})
 	for pr in d["props"]:
 		var pos: Vector2 = pr["pos"]
-		out["props"].append({"type": pr["type"], "pos": [snappedf(pos.x, 0.01), snappedf(pos.y, 0.01)], "scale": pr["scale"], "rot": pr["rot"], "seed": pr["seed"]})
+		var po := {"type": pr["type"], "pos": [snappedf(pos.x, 0.01), snappedf(pos.y, 0.01)], "scale": pr["scale"], "rot": pr["rot"], "seed": pr["seed"]}
+		if str(pr.get("loot", "none")) != "none":
+			po["loot"] = pr["loot"]  # only written when set, so ordinary props stay compact
+		out["props"].append(po)
 	for l in d["lights"]:
 		var lp: Vector2 = l["pos"]
 		var lc: Color = l["color"]
@@ -419,10 +525,15 @@ static func from_dict(j: Dictionary) -> Dictionary:
 	d["spawn"] = _v2(j.get("spawn"), d["size"] * 0.5)
 	for p in j.get("polygons", []):
 		d["polygons"].append(new_poly(str(p.get("type", "grass")), _unpack(p.get("points", []))))
+	for r in j.get("roofs", []):
+		var rtype := str(r.get("type", "roof_shingle"))
+		d["roofs"].append(new_roof(rtype if ROOFS.has(rtype) else "roof_shingle", _unpack(r.get("points", []))))
 	for w in j.get("walls", []):
 		d["walls"].append(new_wall(_unpack(w.get("points", [])), bool(w.get("closed", false)), float(w.get("width", 12.0)), str(w.get("style", "wall"))))
 	for pr in j.get("props", []):
-		d["props"].append(new_prop(str(pr.get("type", "tree")), _v2(pr.get("pos"), Vector2.ZERO), float(pr.get("scale", 1.0)), float(pr.get("rot", 0.0)), int(pr.get("seed", 0))))
+		var ploot := str(pr.get("loot", "none"))
+		d["props"].append(new_prop(str(pr.get("type", "tree")), _v2(pr.get("pos"), Vector2.ZERO), float(pr.get("scale", 1.0)), float(pr.get("rot", 0.0)), int(pr.get("seed", 0)),
+				ploot if NPC_LOOT.has(ploot) else "none"))
 	for l in j.get("lights", []):
 		d["lights"].append(new_light(_v2(l.get("pos"), Vector2.ZERO), float(l.get("radius", 300.0)), Color(str(l.get("color", "ffbf73"))), float(l.get("energy", 1.0)), bool(l.get("flicker", false))))
 	for n in j.get("npcs", []):

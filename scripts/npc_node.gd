@@ -13,9 +13,12 @@ const MAX_HP := 40
 const SIGHT_MASK := 1  # walls, props and closed doors block line of sight; water does not
 const REACTION := 0.6  # seconds between first seeing the player and the first shot
 
+signal defeated(npc: NpcNode)
+
 var npc_name := "NPC"
 var weapon := "none"
 var disposition := "friendly"
+var loot := "none"  # key in MapData.NPC_LOOT, dropped on death
 var head := -1  # index into head_art.gd, -1 = no hat/hair
 var patrol := PackedVector2Array()
 var animate := false
@@ -116,9 +119,19 @@ func take_damage(amount: int, from: Node) -> void:
 	if is_instance_valid(from) and from is Node2D:
 		_facing = ((from as Node2D).global_position - global_position).normalized()
 	if hp == 0:
-		queue_free()
+		_die()
 		return
 	queue_redraw()
+
+
+## Removes the NPC, leaving its loot (if any) on the ground where it fell.
+func _die() -> void:
+	remove_from_group("combatants")
+	remove_from_group("npcs")
+	if loot != "none":
+		LootDrop.spawn(get_tree().current_scene, loot, global_position)
+	defeated.emit(self)
+	queue_free()
 
 
 func _random_patrol_point() -> Vector2:

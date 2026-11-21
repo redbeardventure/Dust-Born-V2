@@ -32,6 +32,7 @@ func _ready() -> void:
 		_occluder.occluder = occ
 		add_child(_occluder)
 	if physics:
+		add_to_group("openings")  # clickable in play-test (player walks up to it)
 		var body := StaticBody2D.new()
 		_shape = CollisionShape2D.new()
 		var rs := RectangleShape2D.new()
@@ -44,6 +45,21 @@ func _ready() -> void:
 
 func _t() -> float:
 	return maxf(thick, 10.0)
+
+
+## True when a click at `p` (world space) lands on this door/window (with a little slack).
+func hit_test(p: Vector2) -> bool:
+	var l := to_local(p)
+	return absf(l.x) < width * 0.5 + 4.0 and absf(l.y) < _t() * 0.5 + 8.0
+
+
+## Where someone coming from `from` should stand to use this opening: in front of its middle,
+## on the same side of the wall as they are, `gap` px clear of the wall face.
+func approach_point(from: Vector2, gap: float = 20.0) -> Vector2:
+	var side := signf(to_local(from).y)
+	if side == 0.0:
+		side = 1.0
+	return to_global(Vector2(0, side * (_t() * 0.5 + gap)))
 
 
 ## True when `p` (world space) is standing in the doorway, so the door must not close on it.

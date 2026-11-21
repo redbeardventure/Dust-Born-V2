@@ -1,6 +1,6 @@
 class_name SampleMapMore
 extends RefCounted
-## Sample maps for the desert, snow, town and swamp themes (pixel coordinates on a 2048x1728 map).
+## Sample maps for the desert, snow, town, swamp and covered wagon themes (pixel coordinates on a 2048x1728 map).
 
 
 static func _scatter_blobs(d: Dictionary, rng: RandomNumberGenerator, type: String, count: int, rmin: float, rmax: float) -> void:
@@ -266,4 +266,108 @@ static func create_swamp() -> Dictionary:
 		d["polygons"].append(MapData.new_poly("mist", SampleMap._organic(SampleMap._blob(Vector2(c[0], c[1]), 260, rng, 10), rng, 20.0, 2)))
 
 	MapData.scatter_props(d, 36, 22, 30, 21)
+	return d
+
+
+# ---------------------------------------------------------------- covered wagon / trail
+
+## Builds one wagon from parts, centred on `c` and turned by `ang` (0 = hitch pointing up, -y):
+## floor-board bed, side-board walls with a gap at the tailgate, four wheels, hitch, driver's seat,
+## `cargo` ([[kind, local_x, local_y, loot?], ...]) and an optional curved canvas cover (`cover` = ROOFS key).
+static func _wagon(d: Dictionary, c: Vector2, ang: float, cover: String, cargo: Array, seed_base: int) -> void:
+	var P := MapData.new_prop
+	var xf := Transform2D(ang, c)
+	var hw := 42.0  # half width of the bed
+	var hh := 84.0  # half length
+	var T := func(x, y) -> Vector2: return xf * Vector2(x, y)  # wagon-local -> map position
+	d["polygons"].append(MapData.new_poly("wagon_boards", PackedVector2Array([T.call(-hw, -hh), T.call(hw, -hh), T.call(hw, hh), T.call(-hw, hh)])))
+	# Side boards all round except a gap at the back to climb in.
+	d["walls"].append(MapData.new_wall(PackedVector2Array([T.call(-16, hh), T.call(-hw, hh), T.call(-hw, -hh), T.call(hw, -hh), T.call(hw, hh), T.call(16, hh)]), false, 6.0, "wagon"))
+	var s := seed_base
+	for wy in [-hh + 30.0, hh - 30.0]:  # front and rear axle
+		for sx in [-1.0, 1.0]:
+			d["props"].append(P.call("wagon_wheel", T.call(sx * (hw + 6.0), wy), 1.0, ang + (0.0 if sx > 0.0 else PI), s))
+			s += 1
+	d["props"].append(P.call("wagon_hitch", T.call(0, -hh - 58.0), 1.0, ang, s))
+	d["props"].append(P.call("wagon_seat", T.call(0, -hh + 14.0), 1.0, ang, s + 1))
+	s += 2
+	for item in cargo:
+		var loot: String = item[3] if item.size() > 3 else "none"
+		var jitter := sin(float(s) * 12.9898) * 0.15  # small fixed tilt so cargo isn't perfectly lined up
+		d["props"].append(P.call(item[0], T.call(item[1], item[2]), 1.0, ang + jitter, s, loot))
+		s += 1
+	if cover != "":
+		# Canvas bonnet over the bed, rounded at both ends where the hoops curve down.
+		var pts := PackedVector2Array()
+		var cw := hw + 4.0
+		var top := -hh + 26.0  # the driver's seat stays uncovered
+		var bot := hh - 4.0
+		for p in [[-cw + 8, top], [cw - 8, top], [cw, top + 10], [cw, bot - 10], [cw - 8, bot], [-cw + 8, bot], [-cw, bot - 10], [-cw, top + 10]]:
+			pts.append(T.call(p[0], p[1]))
+		d["roofs"].append(MapData.new_roof(cover, pts))
+
+
+## Wagon train camped for the night beside the trail: wagons drawn up in a ring round a fire.
+static func create_wagon() -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 1849
+	var d := MapData.empty("wagon")
+	d["spawn"] = Vector2(1024, 1060)
+	var P := MapData.new_prop
+
+	_scatter_blobs(d, rng, "grass", 16, 110, 240)
+	_scatter_blobs(d, rng, "grass_dark", 8, 60, 140)
+
+	# The trail: a band of packed ruts winding across the map.
+	var top := PackedVector2Array()
+	var bot := PackedVector2Array()
+	for i in 18:
+		var x := -40.0 + i * 128.0
+		var y := 300.0 + sin(i * 0.55) * 70.0
+		top.append(Vector2(x, y - 70.0))
+		bot.append(Vector2(x, y + 70.0))
+	bot.reverse()
+	d["polygons"].append(MapData.new_poly("wagon_ruts", SampleMap._organic(top + bot, rng, 8.0, 2)))
+
+	# Camp ring round the fire at (1024, 1000).
+	var fire := Vector2(1024, 1000)
+	var camp := [
+		# [angle round the ring, canvas cover (ROOFS key, "" = open wagon), cargo [kind, x, y, loot]]
+		# Cargo sits along the sides (x = +/-24) so a walkway stays clear down the middle.
+		[-PI * 0.5, "roof_canvas", [["barrel", -25, 30, "none"], ["sacks", 25, 42], ["trunk", 25, -20, "gold"], ["wagon_lantern", 0, 0]]],
+		[-PI * 0.1, "roof_canvas_blue", [["crate", -24, 34, "ammo"], ["crate", 24, 34], ["bedroll", -24, -16], ["barrel", 26, -16]]],
+		[PI * 0.3, "roof_canvas_dark", [["sacks", -25, 30], ["barrel", 25, 32, "food"], ["trunk", -25, -22, "gems"], ["wagon_lantern", 10, 0]]],
+		[PI * 0.75, "", [["crate", -24, -20, "potion"], ["crate", 24, -20], ["barrel", -25, 30], ["sacks", 25, 34], ["haybale", 0, 6]]],
+		[PI * 1.2, "roof_canvas", [["bedroll", -24, 10], ["bedroll", 24, 10], ["crate", 24, -40, "gems"], ["wagon_lantern", 0, 40]]],
+	]
+	var s := 500
+	for i in camp.size():
+		var a: float = camp[i][0]
+		var pos := fire + Vector2(cos(a), sin(a)) * 330.0
+		# Each wagon sits side-on to the fire, hitch pointing round the ring.
+		_wagon(d, pos, a, camp[i][1], camp[i][2], s)
+		s += 40
+
+	# Camp life round the fire.
+	d["props"].append(P.call("campfire", fire, 1.2, 0.0, 7))
+	for k in 6:
+		var a := TAU * float(k) / 6.0 + 0.4
+		var kind: String = "stump" if k % 2 == 0 else "bedroll"
+		d["props"].append(P.call(kind, fire + Vector2(cos(a), sin(a)) * rng.randf_range(80.0, 110.0), 1.0, a + PI * 0.5, 600 + k))
+	d["props"].append(P.call("barrel", fire + Vector2(150, 40), 1.0, 0.0, 620, "none"))
+	d["props"].append(P.call("crate", fire + Vector2(-140, 60), 1.0, 0.3, 621, "gold"))
+	for h in [[1500, 1500], [560, 1520], [1700, 700]]:
+		d["props"].append(P.call("haybale", Vector2(h[0], h[1]), 1.0, rng.randf() * PI, 630 + h[0] % 7))
+
+	# Watering hole off to one side.
+	var pond := Vector2(1700, 1350)
+	d["polygons"].append(MapData.new_poly("mud", SampleMap._organic(SampleMap._blob(pond, 170, rng, 10), rng, 12.0, 2)))
+	d["polygons"].append(MapData.new_poly("water", SampleMap._organic(SampleMap._blob(pond, 120, rng, 10), rng, 10.0, 3)))
+
+	# A couple of hostile riders watching the camp from the trail.
+	d["npcs"].append(MapData.new_npc("Outlaw", Vector2(600, 330), "rifle", "ammo", "hostile"))
+	d["npcs"].append(MapData.new_npc("Outlaw", Vector2(1450, 280), "shotgun", "gold", "hostile"))
+	d["npcs"].append(MapData.new_npc("Trail boss", fire + Vector2(60, 120), "pistol", "none", "friendly"))
+
+	MapData.scatter_props(d, 10, 24, 30, 1849)
 	return d

@@ -57,6 +57,8 @@ static func create(theme: String = "fantasy") -> Dictionary:
 			return MoreMaps.create_town()
 		"swamp":
 			return MoreMaps.create_swamp()
+		"wagon":
+			return MoreMaps.create_wagon()
 	return create_fantasy()
 
 

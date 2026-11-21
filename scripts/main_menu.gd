@@ -1,7 +1,7 @@
 extends Control
 
 ## Built-in sample maps offered on the Play screen (theme keys understood by SampleMap.create).
-const SAMPLE_THEMES := ["fantasy", "train", "desert", "snow", "town", "swamp"]
+const SAMPLE_THEMES := ["fantasy", "train", "desert", "snow", "town", "swamp", "wagon"]
 
 var center: CenterContainer
 var menu_box: VBoxContainer

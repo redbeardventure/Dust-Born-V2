@@ -13,6 +13,9 @@ var _props := Node2D.new()
 var _npcs := Node2D.new()
 var _openings := Node2D.new()
 var _lights := Node2D.new()
+var _roofs := Node2D.new()
+var _roof_items: Array = []  # [{node: Node2D, pts: PackedVector2Array, mats: Array[ShaderMaterial], alpha: float}]
+var roofs_visible := true
 var _mod := CanvasModulate.new()
 var _flicker: Array = []
 var _time := 0.0
@@ -140,6 +143,9 @@ func _init() -> void:
 	add_child(_props)
 	add_child(_npcs)
 	add_child(_lights)
+	_roofs.name = "Roofs"
+	_roofs.z_index = ROOF_Z
+	add_child(_roofs)
 
 
 static func light_texture() -> Texture2D:
@@ -168,6 +174,7 @@ func rebuild_all() -> void:
 	rebuild_openings()  # also rebuilds the walls, which are cut around openings
 	rebuild_props()
 	rebuild_npcs()
+	rebuild_roofs()
 	refresh_ambient()
 
 
@@ -495,6 +502,10 @@ func _add_wall_piece(pts: PackedVector2Array, closed: bool, width: float, style:
 		edge = Color(0.05, 0.05, 0.06)
 		col_body = Color(0.24, 0.26, 0.31)
 		hi = Color(0.38, 0.41, 0.48)
+	elif style == "wagon":  # wooden side boards of a wagon bed
+		edge = Color(0.1, 0.06, 0.03)
+		col_body = Color(0.42, 0.27, 0.15)
+		hi = Color(0.58, 0.4, 0.23)
 	_walls.add_child(_wall_line(pts, closed, width + 8.0, Color(0, 0, 0, 0.28), Vector2(5, 7), flat_ends))
 	_walls.add_child(_wall_line(pts, closed, width + 5.0, edge, Vector2.ZERO, flat_ends))
 	_walls.add_child(_wall_line(pts, closed, width, col_body, Vector2.ZERO, flat_ends))
@@ -542,12 +553,26 @@ func rebuild_props() -> void:
 	for pr in data["props"]:
 		var def: Dictionary = MapData.PROPS.get(pr["type"], MapData.PROPS["tree"])
 		var sc: float = pr["scale"]
+		var is_horse := MapData.HORSE_PROPS.has(pr["type"])
+		if physics_enabled and (is_horse or MapData.COW_PROPS.has(pr["type"])):
+			# Play-test: a live animal that wanders; horses can also be ridden (the editor shows a still prop).
+			var horse := HorseNode.new()
+			horse.rideable = is_horse
+			horse.kind = pr["type"]
+			horse.seed_v = pr["seed"]
+			horse.size_scale = sc
+			horse.heading = pr["rot"]
+			horse.position = pr["pos"]
+			_props.add_child(horse)
+			continue
 		var node := PropNode.new()
 		node.kind = pr["type"]
 		node.seed_v = pr["seed"]
 		node.position = pr["pos"]
 		node.rotation = pr["rot"]
 		node.scale = Vector2(sc, sc)
+		if physics_enabled and MapData.LOOT_PROPS.has(pr["type"]):
+			node.make_interactive(str(pr.get("loot", "none")))  # selectable; barrels can be shot
 		if def.get("fade", false):
 			# Canopies and smoke draw above the player and fade when covering them.
 			node.z_index = 10
@@ -627,6 +652,7 @@ func rebuild_npcs() -> void:
 		node.npc_name = str(n["name"])
 		node.weapon = str(n["weapon"])
 		node.disposition = str(n["disposition"])
+		node.loot = str(n.get("loot", "none"))
 		node.patrol = n["patrol"]
 		node.head = int(n.get("head", -1))
 		node.animate = physics_enabled
@@ -660,6 +686,300 @@ func _add_light(pos: Vector2, radius: float, color: Color, energy: float, flicke
 	_lights.add_child(l)
 	if flicker:
 		_flicker.append([l, energy, randf() * TAU])
+
+
+# ---------------------------------------------------------------- roofs
+
+## Roofs draw above props, characters and projectiles (but below the on-map markers).
+const ROOF_Z := 18
+## Up to this many windows / open doors can be seen through at once, per roof.
+const MAX_VIEW_CONES := 8
+## Farthest a viewer can see into a building through an opening (px).
+const MAX_VIEW_DIST := 900.0
+## Roofs are slightly see-through in the editor so the floor plan stays readable.
+const EDITOR_ROOF_ALPHA := 0.88
+
+static var _roof_shader: Shader
+
+
+## Roof shader: ordinary textured polygon, except pixels inside a "view cone" are discarded.
+## A cone starts at the viewer and passes through an opening (e1..e2); everything beyond the
+## opening inside the cone is cut away, so you can see the inside of the building through it.
+static func roof_shader() -> Shader:
+	if _roof_shader == null:
+		_roof_shader = Shader.new()
+		_roof_shader.code = """
+shader_type canvas_item;
+
+uniform vec2 viewer = vec2(0.0);
+uniform int cone_count = 0;
+uniform vec2 edge_a[8];
+uniform vec2 edge_b[8];
+
+varying vec2 wpos;
+
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 0.0, 1.0)).xy;
+}
+
+void fragment() {
+	vec2 v = wpos - viewer;
+	for (int i = 0; i < 8; i++) {
+		if (i >= cone_count) {
+			break;
+		}
+		vec2 da = edge_a[i] - viewer;
+		vec2 db = edge_b[i] - viewer;
+		float ca = da.x * v.y - da.y * v.x;
+		float cb = db.x * v.y - db.y * v.x;
+		vec2 mid = (edge_a[i] + edge_b[i]) * 0.5;
+		bool between = ca * cb <= 0.0;
+		bool beyond = dot(wpos - mid, mid - viewer) > 0.0;
+		if (between && beyond) {
+			discard;
+		}
+	}
+}
+"""
+	return _roof_shader
+
+
+func _roof_material() -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = roof_shader()
+	return m
+
+
+## Max roof outline vertices the shaded shader handles (extra vertices are ignored).
+const ROOF_MAX_SEGS := 64
+
+static var _roof_shaded_shader: Shader
+
+
+## Shaded roof: every pixel finds its nearest roof edge. That edge's slope direction picks the
+## light/dark facet (so a rectangle becomes a hip roof and a square a pyramid), the spot where
+## the nearest edge changes becomes a ridge / hip / valley line, and the texture rows are turned
+## to run parallel to the eave. "Round" roofs (wagon canvas, train cars) shade smoothly instead.
+static func roof_shaded_shader() -> Shader:
+	if _roof_shaded_shader == null:
+		_roof_shaded_shader = Shader.new()
+		_roof_shaded_shader.code = """
+shader_type canvas_item;
+
+uniform vec2 viewer = vec2(0.0);
+uniform int cone_count = 0;
+uniform vec2 edge_a[8];
+uniform vec2 edge_b[8];
+
+uniform int seg_count = 0;
+uniform vec2 seg_a[64];
+uniform vec2 seg_b[64];
+uniform float orient = 1.0;
+uniform float max_d = 40.0;
+uniform float round_roof = 0.0;
+uniform vec2 light_dir = vec2(-0.55, -0.83);
+
+varying vec2 wpos;
+varying vec4 vcol;
+
+void vertex() {
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 0.0, 1.0)).xy;
+	vcol = COLOR;  // includes the node's modulate (used for fading)
+}
+
+void fragment() {
+	vec2 v = wpos - viewer;
+	for (int i = 0; i < 8; i++) {
+		if (i >= cone_count) {
+			break;
+		}
+		vec2 da = edge_a[i] - viewer;
+		vec2 db = edge_b[i] - viewer;
+		float ca = da.x * v.y - da.y * v.x;
+		float cb = db.x * v.y - db.y * v.x;
+		vec2 mid = (edge_a[i] + edge_b[i]) * 0.5;
+		if (ca * cb <= 0.0 && dot(wpos - mid, mid - viewer) > 0.0) {
+			discard;
+		}
+	}
+	float d1 = 1e9;
+	float d2 = 1e9;
+	vec2 n1 = vec2(0.0);
+	vec2 t1 = vec2(1.0, 0.0);
+	for (int i = 0; i < 64; i++) {
+		if (i >= seg_count) {
+			break;
+		}
+		vec2 a = seg_a[i];
+		vec2 ab = seg_b[i] - a;
+		float l2 = max(dot(ab, ab), 0.0001);
+		float h = clamp(dot(wpos - a, ab) / l2, 0.0, 1.0);
+		float d = length(wpos - a - ab * h);
+		vec2 t = ab * inversesqrt(l2);
+		vec2 n = vec2(t.y, -t.x) * orient;
+		if (d < d1) {
+			if (dot(n, n1) < 0.98) {
+				d2 = d1;
+			}
+			d1 = d;
+			n1 = n;
+			t1 = t;
+		} else if (d < d2 && dot(n, n1) < 0.98) {
+			d2 = d;
+		}
+	}
+	vec2 q = vec2(dot(wpos, t1), dot(wpos, n1));
+	vec4 tex = texture(TEXTURE, q * TEXTURE_PIXEL_SIZE);
+	float lit = dot(n1, normalize(light_dir));
+	vec3 col;
+	if (round_roof > 0.5) {
+		// Barrel / curved roof: surface tilts away from the crown, so shading eases off toward the middle.
+		float tilt = 1.0 - clamp(d1 / max_d, 0.0, 1.0);
+		col = tex.rgb * (1.0 + 0.45 * lit * tilt);
+		col *= mix(0.78, 1.0, smoothstep(0.0, max_d, d1));
+	} else {
+		col = tex.rgb * (1.0 + 0.34 * lit);
+		float ridge = 1.0 - smoothstep(0.0, 2.2, d2 - d1);
+		col = mix(col, col * 0.6, ridge * 0.85);
+		col *= mix(0.84, 1.0, smoothstep(0.0, 16.0, d1));
+	}
+	COLOR = vec4(col, tex.a) * vcol;
+}
+"""
+	return _roof_shaded_shader
+
+
+func _roof_shaded_material(pts: PackedVector2Array, round_roof: bool) -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = roof_shaded_shader()
+	var n := pts.size()
+	var area := 0.0
+	for i in n:
+		area += pts[i].cross(pts[(i + 1) % n])
+	var sa := PackedVector2Array()
+	var sb := PackedVector2Array()
+	for i in mini(n, ROOF_MAX_SEGS):
+		sa.append(pts[i])
+		sb.append(pts[(i + 1) % n])
+	var count := sa.size()
+	while sa.size() < ROOF_MAX_SEGS:
+		sa.append(Vector2.ZERO)
+		sb.append(Vector2.ZERO)
+	# Deepest point inside (coarse grid search): how far the roof rises from eave to crown.
+	var bb := Rect2(pts[0], Vector2.ZERO)
+	for p in pts:
+		bb = bb.expand(p)
+	var best := 8.0
+	for gx in 14:
+		for gy in 14:
+			var p := bb.position + Vector2((gx + 0.5) / 14.0 * bb.size.x, (gy + 0.5) / 14.0 * bb.size.y)
+			if Geometry2D.is_point_in_polygon(p, pts):
+				best = maxf(best, MapData.dist_to_path(p, pts, true))
+	m.set_shader_parameter("seg_a", sa)
+	m.set_shader_parameter("seg_b", sb)
+	m.set_shader_parameter("seg_count", count)
+	m.set_shader_parameter("orient", 1.0 if area >= 0.0 else -1.0)
+	m.set_shader_parameter("max_d", best)
+	m.set_shader_parameter("round_roof", 1.0 if round_roof else 0.0)
+	return m
+
+
+func rebuild_roofs() -> void:
+	_clear(_roofs)
+	_roof_items.clear()
+	_roofs.visible = roofs_visible
+	for r in data.get("roofs", []):
+		var pts: PackedVector2Array = r["points"]
+		if pts.size() < 3:
+			continue
+		var type := str(r["type"])
+		var def: Dictionary = MapData.ROOFS.get(type, MapData.ROOFS["roof_shingle"])
+		var holder := Node2D.new()
+		var mats: Array = []
+		# Drop shadow cast onto the ground, offset away from the light (top-left).
+		var shadow := Polygon2D.new()
+		shadow.polygon = pts
+		shadow.position = Vector2(9, 12)
+		shadow.color = Color(0, 0, 0, 0.35)
+		var sm := _roof_material()
+		shadow.material = sm
+		mats.append(sm)
+		holder.add_child(shadow)
+		var poly := Polygon2D.new()
+		poly.polygon = pts
+		poly.uv = pts
+		poly.texture = MapData.get_texture(type)
+		poly.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+		var shape := str(def.get("shape", "hip"))
+		# "flat" = plain texture, no pitch shading or ridge lines (e.g. wagon canvas).
+		var pm := _roof_material() if shape == "flat" else _roof_shaded_material(pts, shape == "round")
+		poly.material = pm
+		mats.append(pm)
+		holder.add_child(poly)
+		var oc: Color = def["outline"]
+		var line := Line2D.new()
+		line.points = pts
+		line.closed = true
+		line.width = 3.0
+		line.default_color = oc
+		line.joint_mode = Line2D.LINE_JOINT_ROUND
+		var lm := _roof_material()
+		line.material = lm
+		mats.append(lm)
+		holder.add_child(line)
+		holder.modulate.a = 1.0 if physics_enabled else EDITOR_ROOF_ALPHA
+		_roofs.add_child(holder)
+		_roof_items.append({"node": holder, "pts": pts, "mats": mats, "alpha": 1.0})
+
+
+func set_roofs_visible(on: bool) -> void:
+	roofs_visible = on
+	_roofs.visible = on
+
+
+## Play-test: hides a roof while the player is under it, and otherwise cuts a view cone
+## through every window / open door on that roof so the inside can be seen from outside.
+func update_roof_fade(pos: Vector2, delta: float) -> void:
+	if _roof_items.is_empty():
+		return
+	var doors: Array = []
+	for n in _openings.get_children():
+		var op := n as OpeningNode
+		if op != null and (op.kind == "window" or op.is_open):
+			doors.append(op)
+	for item in _roof_items:
+		var pts: PackedVector2Array = item["pts"]
+		var inside := Geometry2D.is_point_in_polygon(pos, pts)
+		var a: float = move_toward(float(item["alpha"]), 0.0 if inside else 1.0, delta * 4.0)
+		item["alpha"] = a
+		var node: Node2D = item["node"]
+		node.modulate.a = a
+		node.visible = a > 0.01
+		var ea := PackedVector2Array()
+		var eb := PackedVector2Array()
+		if not inside:
+			for op in doors:
+				if ea.size() >= MAX_VIEW_CONES:
+					break
+				if op.position.distance_to(pos) > MAX_VIEW_DIST:
+					continue
+				if not (Geometry2D.is_point_in_polygon(op.position, pts) or MapData.dist_to_path(op.position, pts, true) < 24.0):
+					continue
+				ea.append(op.to_global(Vector2(-op.width * 0.5, 0.0)))
+				eb.append(op.to_global(Vector2(op.width * 0.5, 0.0)))
+		while ea.size() < MAX_VIEW_CONES:
+			ea.append(Vector2.ZERO)
+			eb.append(Vector2.ZERO)
+		var count := 0
+		if not inside:
+			for k in MAX_VIEW_CONES:
+				if ea[k] != eb[k]:
+					count += 1
+		for m in item["mats"]:
+			m.set_shader_parameter("viewer", pos)
+			m.set_shader_parameter("cone_count", count)
+			m.set_shader_parameter("edge_a", ea)
+			m.set_shader_parameter("edge_b", eb)
 
 
 ## Fades tree canopies that cover `pos` so the player stays visible underneath.

@@ -5,6 +5,100 @@ extends Node2D
 var kind: String = "tree"
 var seed_v: int = 0
 
+# ---- play-test only (set up by MapRenderer.rebuild_props via make_interactive) ----
+## Loot inside (key in MapData.NPC_LOOT). Barrels drop it when shot apart, crates when opened.
+var loot := "none"
+var hp := 0
+var opened := false
+var _hit_flash := 0.0
+
+const BARREL_HP := 30
+const CRATE_HP := 50
+
+## Sent when shot apart, so a player targeting it drops the target at once.
+signal defeated(node: Node)
+
+
+## Makes a barrel/crate targetable in play-test (group "containers") and shootable
+## (group "breakable": projectiles that hit their collision call take_damage).
+func make_interactive(loot_kind: String) -> void:
+	loot = loot_kind
+	add_to_group("containers")  # targetable by the player (click / Tab)
+	if kind != "trunk":  # trunks are opened, never shot apart
+		add_to_group("breakable")
+	hp = max_hp()
+
+
+## Crates and trunks are opened by hand (E / Open button).
+func is_openable() -> bool:
+	return kind == "crate" or kind == "trunk"
+
+
+## Barrels break quicker than the sturdier crates.
+func max_hp() -> int:
+	return BARREL_HP if kind == "barrel" else CRATE_HP
+
+
+func label() -> String:
+	return str(MapData.PROPS.get(kind, {}).get("label", kind))
+
+
+## Footprint radius in world pixels (selection / click size).
+func _radius() -> float:
+	return float(MapData.PROPS.get(kind, MapData.PROPS["tree"])["radius"]) * scale.x
+
+
+func hit_test(p: Vector2) -> bool:
+	return global_position.distance_to(p) < _radius() + 4.0
+
+
+## Where someone coming from `from` should stand to use this prop: just outside it, on their side.
+func approach_point(from: Vector2, gap: float = 18.0) -> Vector2:
+	var d := from - global_position
+	if d.length() < 0.5:
+		d = Vector2.DOWN
+	return global_position + d.normalized() * (_radius() + gap)
+
+
+## Crates: lifts the lid and drops the loot (once). Returns the loot kind found ("none" = empty).
+func open_container(from: Vector2) -> String:
+	if not is_openable() or opened:
+		return "none"
+	opened = true
+	var found := loot
+	if found != "none":
+		# On the opener's side so the drop isn't hidden under the crate.
+		LootDrop.spawn(get_tree().current_scene, found, approach_point(from, 4.0))
+		loot = "none"
+	queue_redraw()
+	return found
+
+
+func take_damage(amount: int, _from: Node) -> void:
+	if not is_in_group("breakable") or hp <= 0:
+		return
+	hp = maxi(hp - amount, 0)
+	_hit_flash = 0.15
+	if hp == 0:
+		_break_apart()
+	queue_redraw()
+
+
+## Barrel destroyed: burst effect, loot left behind, collision gone (path-finding updated).
+func _break_apart() -> void:
+	remove_from_group("containers")
+	remove_from_group("breakable")
+	var scene := get_tree().current_scene
+	PropBurst.spawn(scene, global_position, scale.x)
+	if loot != "none":
+		LootDrop.spawn(scene, loot, global_position)
+	var p := get_tree().get_first_node_in_group("player")
+	if p != null and p.has_method("refresh_nav"):
+		var r := _radius() + 24.0
+		p.call("refresh_nav", Rect2(global_position - Vector2(r, r), Vector2(r, r) * 2.0))
+	defeated.emit(self)
+	queue_free()
+
 
 func _u(v: Vector2) -> Vector2:
 	# Keeps light/shadow direction constant in world space even when the prop is rotated.
@@ -96,6 +190,188 @@ func _draw() -> void:
 			_draw_mushroom(rng)
 		"wisp":
 			_draw_wisp()
+		"wagon_wheel":
+			_draw_wagon_wheel()
+		"wagon_hitch":
+			_draw_wagon_hitch()
+		"wagon_seat":
+			_draw_wagon_seat()
+		"trunk":
+			_draw_trunk()
+		"bedroll":
+			_draw_bedroll(rng)
+		"sacks":
+			_draw_sacks(rng)
+		"wagon_lantern":
+			_draw_wagon_lantern()
+		"horse_chestnut", "horse_bay", "horse_black", "horse_grey", "horse_palomino":
+			_draw_horse(rng)
+		"cow_holstein", "cow_black", "cow_brown", "cow_hereford", "longhorn_tan", "longhorn_spotted", "longhorn_red":
+			_draw_cow(rng)
+
+
+## Horse coats: [body, body shade, mane / tail, saddle blanket].
+const HORSE_COATS := {
+	"horse_chestnut": [Color("b8642e"), Color("8f4720"), Color("6e3418"), Color("a8352b")],
+	"horse_bay": [Color("8a5a35"), Color("6a4126"), Color("2a1d16"), Color("2f5e8a")],
+	"horse_black": [Color("2c2a30"), Color("1c1b20"), Color("121115"), Color("8a2a2a")],
+	"horse_grey": [Color("d9d9d6"), Color("a9aaa8"), Color("6d6e70"), Color("3f6b3a")],
+	"horse_palomino": [Color("d9a85a"), Color("b8873f"), Color("f1e6c8"), Color("6b3f8a")],
+}
+
+
+## Ellipse-ish outline centred at `c`, radius `rx` across and `ry` along; `taper` narrows the -y end.
+func _oval(c: Vector2, rx: float, ry: float, taper: float = 0.0, n: int = 20) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	for i in n:
+		var a := TAU * float(i) / float(n)
+		var y := sin(a)
+		var w := rx * (1.0 - taper * maxf(-y, 0.0))
+		pts.append(c + Vector2(cos(a) * w, y * ry))
+	return pts
+
+
+## Saddled horse seen from above: head and neck forward (-y), barrel with saddle and blanket,
+## hindquarters and tail at +y. Coat colours come from HORSE_COATS.
+func _draw_horse(rng: RandomNumberGenerator) -> void:
+	var coat: Array = HORSE_COATS.get(kind, HORSE_COATS["horse_chestnut"])
+	var body: Color = coat[0]
+	var shade: Color = coat[1]
+	var mane: Color = coat[2]
+	var blanket: Color = coat[3]
+	var edge := body.darkened(0.55)
+	var sh := _u(Vector2(5, 7))
+	# ground shadow
+	draw_colored_polygon(_oval(Vector2(0, 8) + sh, 17.0, 36.0), Color(0, 0, 0, 0.28))
+	draw_colored_polygon(_oval(Vector2(0, -44) + sh, 8.0, 20.0, 0.3), Color(0, 0, 0, 0.28))
+	# tail (swishes a little per horse)
+	var sway := rng.randf_range(-6.0, 6.0)
+	var tail := PackedVector2Array([Vector2(-4, 36), Vector2(4, 36), Vector2(5 + sway, 52), Vector2(sway, 62), Vector2(-5 + sway, 52)])
+	draw_colored_polygon(tail, mane)
+	draw_polyline(tail + PackedVector2Array([tail[0]]), mane.darkened(0.4), 1.0)
+	# neck and head
+	var neck := PackedVector2Array([Vector2(-10, -16), Vector2(-7, -42), Vector2(7, -42), Vector2(10, -16)])
+	draw_colored_polygon(neck, body)
+	var head := _oval(Vector2(0, -52), 7.5, 15.0, 0.35)
+	draw_colored_polygon(head, body)
+	draw_polyline(head + PackedVector2Array([head[0]]), edge, 1.2)
+	draw_colored_polygon(_oval(Vector2(0, -63), 4.0, 4.0), shade)  # muzzle
+	for sx: float in [-1.0, 1.0]:  # ears
+		draw_colored_polygon(PackedVector2Array([Vector2(sx * 3.0, -44), Vector2(sx * 7.5, -45), Vector2(sx * 6.0, -38)]), shade)
+		draw_circle(Vector2(sx * 6.5, -54), 1.3, Color(0.05, 0.04, 0.04))  # eyes
+	# barrel: shoulders narrower than the hindquarters
+	var barrel := _oval(Vector2(0, 10), 15.0, 30.0, 0.15, 24)
+	draw_colored_polygon(barrel, body)
+	draw_colored_polygon(_oval(Vector2(0, 30), 15.5, 11.0), body)  # rump
+	draw_colored_polygon(_oval(Vector2(4.5, 12), 7.0, 26.0), Color(shade, 0.55))  # flank in shade
+	draw_colored_polygon(_oval(Vector2(-3.5, 6), 5.0, 24.0), Color(body.lightened(0.18), 0.6))  # lit side
+	draw_line(Vector2(0, 30), Vector2(0, 40), Color(edge, 0.5), 1.0)  # rump crease
+	if kind == "horse_grey":  # dapples
+		for i in 14:
+			var p := Vector2(rng.randf_range(-11, 11), rng.randf_range(-12, 36))
+			draw_circle(p, rng.randf_range(1.5, 3.0), Color(shade, 0.6))
+	draw_polyline(barrel + PackedVector2Array([barrel[0]]), edge, 1.2)
+	# mane along the top of the neck
+	draw_colored_polygon(PackedVector2Array([Vector2(-3, -14), Vector2(-2, -44), Vector2(2.5, -44), Vector2(3, -14)]), mane)
+	draw_line(Vector2(0, -44), Vector2(0, -16), mane.darkened(0.3), 1.0)
+	# saddle blanket, saddle, horn and stirrups
+	draw_rect(Rect2(-15, -10, 30, 26), blanket)
+	draw_rect(Rect2(-15, -10, 30, 26), blanket.darkened(0.45), false, 1.2)
+	draw_line(Vector2(-15, 13), Vector2(15, 13), blanket.lightened(0.3), 1.2)
+	var saddle := _oval(Vector2(0, 3), 10.0, 11.0, 0.2)
+	draw_colored_polygon(saddle, Color("6b3f1e"))
+	draw_polyline(saddle + PackedVector2Array([saddle[0]]), Color("2e1a0c"), 1.2)
+	draw_colored_polygon(_oval(Vector2(0, 6), 6.0, 5.0), Color("8a5428"))  # seat
+	draw_circle(Vector2(0, -7), 2.5, Color("4a2a12"))  # horn
+	for sx: float in [-1.0, 1.0]:
+		draw_line(Vector2(sx * 10.0, 2), Vector2(sx * 17.0, 6), Color("2e1a0c"), 1.5)
+		draw_rect(Rect2(sx * 17.0 - 2.0, 5, 4, 3), Color("9a9a9a"))
+
+
+## Cattle coats: [body, body shade, patch colour (spots / white face), muzzle, horns, long horns?].
+const COW_COATS := {
+	"cow_holstein": [Color("eeeeea"), Color("c9c9c4"), Color("1e1e24"), Color("e8a6a6"), Color("d8ceb4"), false],
+	"cow_black": [Color("2d2f3a"), Color("1f212a"), Color("2d2f3a"), Color("6a5a5a"), Color("d8ceb4"), false],
+	"cow_brown": [Color("8a5230"), Color("6a3d22"), Color("8a5230"), Color("c99a86"), Color("d8ceb4"), false],
+	"cow_hereford": [Color("a2482a"), Color("7d351e"), Color("f2ede2"), Color("e3b2a2"), Color("d8ceb4"), false],
+	"longhorn_tan": [Color("c49a62"), Color("a07a48"), Color("e9dcc0"), Color("b28c6c"), Color("e8dcc0"), true],
+	"longhorn_spotted": [Color("efe8dc"), Color("cfc6b6"), Color("7a4a2a"), Color("d8a690"), Color("e8dcc0"), true],
+	"longhorn_red": [Color("9a4a26"), Color("74361a"), Color("efe6d4"), Color("c8907a"), Color("e8dcc0"), true],
+}
+
+
+## Cow seen from above: blocky barrel, broad head forward (-y) with ears out to the sides,
+## horns (short, or a wide sweep for longhorns), a bell collar and a tufted tail.
+## Patches (spots, white face) come from COW_COATS and are placed from the seed.
+func _draw_cow(rng: RandomNumberGenerator) -> void:
+	var coat: Array = COW_COATS.get(kind, COW_COATS["cow_brown"])
+	var body: Color = coat[0]
+	var shade: Color = coat[1]
+	var patch: Color = coat[2]
+	var muzzle: Color = coat[3]
+	var horn: Color = coat[4]
+	var long_horns: bool = coat[5]
+	var edge := body.darkened(0.6) if body.get_luminance() > 0.3 else Color(0.04, 0.04, 0.06)
+	var sh := _u(Vector2(5, 7))
+	# ground shadow
+	draw_colored_polygon(_oval(Vector2(0, 6) + sh, 20.0, 36.0), Color(0, 0, 0, 0.28))
+	draw_colored_polygon(_oval(Vector2(0, -38) + sh, 12.0, 12.0), Color(0, 0, 0, 0.28))
+	# tail with a dark tuft
+	var sway := rng.randf_range(-5.0, 5.0)
+	draw_line(Vector2(0, 38), Vector2(sway, 54), body.darkened(0.2), 2.5)
+	draw_colored_polygon(_oval(Vector2(sway, 57), 3.0, 5.0), patch if patch != body else shade.darkened(0.4))
+	# barrel: broad and boxy, hips a little wider than the shoulders
+	var barrel := PackedVector2Array()
+	for p in _oval(Vector2(0, 6), 18.0, 34.0, 0.08, 28):
+		barrel.append(Vector2(clampf(p.x * 1.12, -18.0, 18.0), p.y))  # flatten the sides
+	draw_colored_polygon(barrel, body)
+	draw_colored_polygon(_oval(Vector2(5.5, 8), 8.0, 28.0), Color(shade, 0.55))  # flank in shade
+	draw_colored_polygon(_oval(Vector2(-4.5, 4), 5.5, 24.0), Color(body.lightened(0.15), 0.5))  # lit side
+	if kind == "cow_holstein" or kind == "longhorn_spotted":
+		for i in 7:  # big irregular patches, kept inside the body
+			var c := Vector2(rng.randf_range(-11, 11), rng.randf_range(-22, 32))
+			var spot := _oval(c, rng.randf_range(4.0, 8.0), rng.randf_range(5.0, 10.0), 0.0, 10)
+			var inside := PackedVector2Array()
+			for p in spot:
+				inside.append(Vector2(clampf(p.x, -16.5, 16.5), clampf(p.y, -26.0, 38.0)))
+			draw_colored_polygon(inside, patch)
+	elif kind == "longhorn_tan" or kind == "longhorn_red":
+		draw_colored_polygon(_oval(Vector2(0, 24), 9.0, 10.0), Color(patch, 0.85))  # pale rump patch
+	draw_line(Vector2(0, -24), Vector2(0, 34), Color(edge, 0.25), 1.5)  # spine
+	draw_polyline(barrel + PackedVector2Array([barrel[0]]), edge, 1.2)
+	# collar with a brass bell
+	draw_line(Vector2(-11, -26), Vector2(11, -26), Color("a8282c"), 3.5)
+	draw_circle(Vector2(0, -24), 2.6, Color("d4aa3a"))
+	# ears stick out sideways
+	for sx: float in [-1.0, 1.0]:
+		var ear := _oval(Vector2(sx * 13.0, -34), 6.0, 3.0)
+		draw_colored_polygon(ear, body)
+		draw_colored_polygon(_oval(Vector2(sx * 13.5, -34), 3.5, 1.6), muzzle.darkened(0.15))
+	# head: broad skull tapering to the muzzle
+	var head := _oval(Vector2(0, -40), 9.5, 13.0, 0.25)
+	var head_col := patch if kind == "cow_hereford" else body  # Herefords have a white face
+	draw_colored_polygon(head, head_col)
+	if kind == "cow_holstein":
+		draw_colored_polygon(_oval(Vector2(-3, -40), 4.0, 6.0), patch)  # face blaze
+	draw_polyline(head + PackedVector2Array([head[0]]), edge, 1.2)
+	draw_colored_polygon(_oval(Vector2(0, -51), 6.5, 4.5), muzzle)
+	draw_circle(Vector2(-2.3, -52), 1.0, muzzle.darkened(0.5))  # nostrils
+	draw_circle(Vector2(2.3, -52), 1.0, muzzle.darkened(0.5))
+	draw_circle(Vector2(-6.5, -41), 1.3, Color(0.05, 0.04, 0.04))  # eyes
+	draw_circle(Vector2(6.5, -41), 1.3, Color(0.05, 0.04, 0.04))
+	# horns from the top of the skull
+	var tip := horn.darkened(0.45)
+	for sx: float in [-1.0, 1.0]:
+		if long_horns:
+			# Wide sweep out to the sides, curving forward and up at the tips.
+			var pts := PackedVector2Array([Vector2(sx * 6, -31), Vector2(sx * 20, -31), Vector2(sx * 34, -34), Vector2(sx * 42, -42)])
+			draw_polyline(pts, Color(0, 0, 0, 0.25), 5.5)  # outline
+			draw_polyline(pts, horn, 4.0)
+			draw_line(pts[2], pts[3], tip, 3.0)
+			draw_circle(pts[0], 3.2, horn)
+		else:
+			draw_line(Vector2(sx * 6, -31), Vector2(sx * 11, -32), horn, 3.2)
+			draw_line(Vector2(sx * 11, -32), Vector2(sx * 13, -35), tip, 2.4)
 
 
 func _draw_canopy(rng: RandomNumberGenerator, r: float, clumps: int, base_col: Color, dark: Color, light: Color) -> void:
@@ -135,12 +411,35 @@ func _draw_barrel() -> void:
 	draw_arc(Vector2.ZERO, 12.5, 0.0, TAU, 24, Color("2d2d2d"), 1.5)
 	draw_arc(Vector2.ZERO, 7.0, 0.0, TAU, 20, Color(0.2, 0.12, 0.05, 0.8), 1.5)
 	draw_line(Vector2(-10, 0), Vector2(10, 0), Color(0.25, 0.15, 0.07, 0.6), 1.0)
+	if hp > 0 and hp < max_hp():  # splintered once hit
+		var dmg := 1.0 - float(hp) / BARREL_HP
+		for i in int(ceil(dmg * 4.0)):
+			var a := 0.7 + i * 1.6
+			draw_line(Vector2(cos(a), sin(a)) * 4.0, Vector2(cos(a + 0.3), sin(a + 0.3)) * 12.0, Color(0.15, 0.08, 0.03, 0.9), 1.2)
+	if _hit_flash > 0.0:
+		draw_circle(Vector2.ZERO, 14.0, Color(1, 0.9, 0.6, _hit_flash * 3.0))
 
 
 func _draw_crate() -> void:
 	draw_rect(Rect2(Vector2(-16, -16) + _u(Vector2(3, 4)), Vector2(32, 32)), Color(0, 0, 0, 0.3))
 	draw_rect(Rect2(-16, -16, 32, 32), Color("7a5530"))
 	draw_rect(Rect2(-16, -16, 32, 32), Color("2b1a0b"), false, 2.0)
+	if _hit_flash > 0.0:
+		draw_rect(Rect2(-16, -16, 32, 32), Color(1, 0.9, 0.6, _hit_flash * 3.0))
+	if hp > 0 and hp < max_hp():  # split boards once hit
+		var dmg := 1.0 - float(hp) / max_hp()
+		for i in int(ceil(dmg * 4.0)):
+			var y := -10.0 + i * 6.5
+			draw_line(Vector2(-14, y), Vector2(-2 + i * 3, y + 4), Color(0.12, 0.07, 0.02, 0.9), 1.2)
+	if opened:
+		# Lid off: dark empty inside, lid propped against one side.
+		draw_rect(Rect2(-13, -13, 26, 26), Color("2a1a0c"))
+		draw_rect(Rect2(-13, -13, 26, 26), Color("1a1008"), false, 1.5)
+		draw_set_transform(Vector2(13, -20), 0.35, Vector2.ONE)
+		draw_rect(Rect2(-14, -4, 28, 8), Color("8a6034"))
+		draw_rect(Rect2(-14, -4, 28, 8), Color("2b1a0b"), false, 1.5)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		return
 	draw_rect(Rect2(-11, -11, 22, 22), Color("5e4023"), false, 2.0)
 	draw_line(Vector2(-11, -11), Vector2(11, 11), Color("5e4023"), 2.0)
 	draw_line(Vector2(11, -11), Vector2(-11, 11), Color("5e4023"), 2.0)
@@ -445,8 +744,11 @@ func _draw_campfire(rng: RandomNumberGenerator) -> void:
 		draw_circle(p, 1.4 * (1.0 - ph), Color(1.0, 0.7, 0.2, 1.0 - ph))
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if kind == "campfire":
+		queue_redraw()
+	if _hit_flash > 0.0:  # barrel hit flash fading out
+		_hit_flash = maxf(_hit_flash - delta, 0.0)
 		queue_redraw()
 
 
@@ -532,6 +834,137 @@ func _draw_haybale(rng: RandomNumberGenerator) -> void:
 	for x in [-11.0, 11.0]:
 		draw_line(Vector2(x, -15), Vector2(x, 15), Color("6a4a1c"), 2.0)
 	draw_rect(Rect2(-22, -15, 44, 30), Color("5a4010"), false, 2.0)
+
+
+# ---------------------------------------------------------------- covered wagon theme
+# Parts are drawn with the wagon's length along local y; the hitch end of a wagon is -y.
+
+## Seen from above a wheel is its rim edge-on: a narrow wooden band with an iron tyre,
+## spoke ends showing along it and the hub poking out on the outer (+x) side.
+func _draw_wagon_wheel() -> void:
+	var w := 10.0
+	var h := 46.0
+	var r := Rect2(-w * 0.5, -h * 0.5, w, h)
+	draw_rect(Rect2(r.position + _u(Vector2(3, 4)), r.size), Color(0, 0, 0, 0.32))
+	draw_rect(r, Color("4a3018"))
+	for i in 6:  # spoke ends / felloe joints
+		var y := -h * 0.5 + 4.0 + i * (h - 8.0) / 5.0
+		draw_line(Vector2(-w * 0.5, y), Vector2(w * 0.5, y), Color("2a1a0c"), 1.2)
+	draw_rect(Rect2(-w * 0.5 + 2.5, -h * 0.5, w - 5.0, h), Color(0.62, 0.42, 0.24, 0.35))  # worn top of the rim
+	draw_rect(r, Color("1b1b1e"), false, 2.0)  # iron tyre
+	draw_line(Vector2(-w * 0.5 + 1.0, -h * 0.5 + 3.0), Vector2(-w * 0.5 + 1.0, h * 0.5 - 3.0), Color(0.6, 0.6, 0.64, 0.55), 1.0)
+	# Hub and axle cap on the outside.
+	draw_rect(Rect2(w * 0.5 - 1.0, -6.0, 6.0, 12.0), Color("5a3c20"))
+	draw_rect(Rect2(w * 0.5 - 1.0, -6.0, 6.0, 12.0), Color("1d1209"), false, 1.0)
+	draw_circle(Vector2(w * 0.5 + 5.5, 0), 3.2, Color("2b2b30"))
+	draw_circle(Vector2(w * 0.5 + 5.0, -0.8), 1.2, Color(0.75, 0.75, 0.8, 0.7))
+
+
+## Tongue (pole) running forward from the wagon, ending in the doubletree crossbar with two
+## singletrees where the team is hitched. The attachment end is +y, the team end is -y.
+func _draw_wagon_hitch() -> void:
+	var wood := Color("6b4526")
+	var wood_hi := Color("8f6338")
+	var dark := Color("1d1209")
+	var iron := Color("2b2b30")
+	var sh := _u(Vector2(3, 4))
+	# shadow
+	draw_line(Vector2(0, 58) + sh, Vector2(0, -46) + sh, Color(0, 0, 0, 0.3), 6.0)
+	draw_rect(Rect2(Vector2(-36, -50) + sh, Vector2(72, 7)), Color(0, 0, 0, 0.3))
+	# hounds: diagonal braces from the front axle to the tongue
+	for sx in [-1.0, 1.0]:
+		draw_line(Vector2(sx * 16.0, 58), Vector2(0, 30), dark, 4.0)
+		draw_line(Vector2(sx * 16.0, 58), Vector2(0, 30), wood, 2.5)
+	# tongue
+	draw_line(Vector2(0, 60), Vector2(0, -46), dark, 6.0)
+	draw_line(Vector2(0, 60), Vector2(0, -46), wood, 4.0)
+	draw_line(Vector2(-0.8, 58), Vector2(-0.8, -44), wood_hi, 1.2)
+	# doubletree crossbar
+	draw_rect(Rect2(-36, -50, 72, 7), wood)
+	draw_rect(Rect2(-36, -50, 72, 7), dark, false, 1.5)
+	draw_circle(Vector2(0, -46.5), 3.0, iron)  # pin through the tongue
+	# singletrees, chained to the crossbar ends
+	for sx in [-1.0, 1.0]:
+		var cx: float = sx * 26.0  # sx comes from an untyped array, so the type is given explicitly
+		draw_line(Vector2(cx, -50), Vector2(cx, -58), iron, 1.5)
+		draw_rect(Rect2(cx - 14.0, -62, 28, 5), wood)
+		draw_rect(Rect2(cx - 14.0, -62, 28, 5), dark, false, 1.2)
+		for ex in [-14.0, 14.0]:  # trace hooks
+			draw_circle(Vector2(cx + ex, -59.5), 2.0, iron)
+	# neck yoke ring at the tip of the tongue
+	draw_arc(Vector2(0, -46), 5.0, 0.0, TAU, 12, iron, 1.5)
+
+
+## Driver's bench across the front of the bed, with a footboard.
+func _draw_wagon_seat() -> void:
+	draw_rect(Rect2(Vector2(-34, -10) + _u(Vector2(2, 3)), Vector2(68, 20)), Color(0, 0, 0, 0.28))
+	draw_rect(Rect2(-34, -10, 68, 6), Color("4a3018"))  # footboard
+	draw_rect(Rect2(-30, -4, 60, 12), Color("8f6338"))  # seat plank
+	draw_line(Vector2(-30, 2), Vector2(30, 2), Color("5e4023"), 1.0)
+	draw_rect(Rect2(-30, 7, 60, 3), Color("3a2614"))  # backrest rail
+	draw_rect(Rect2(-30, -4, 60, 14), Color("1d1209"), false, 1.5)
+	for sx in [-1.0, 1.0]:
+		draw_circle(Vector2(sx * 27.0, 2), 1.4, Color("2b2b30"))  # iron brackets
+
+
+## Travel trunk: domed wooden chest with iron bands and a brass lock.
+func _draw_trunk() -> void:
+	draw_rect(Rect2(Vector2(-16, -11) + _u(Vector2(3, 4)), Vector2(32, 22)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(-16, -11, 32, 22), Color("6a3f22"))
+	draw_rect(Rect2(-16, -11, 32, 9), Color("84522c"))  # lit side of the domed lid
+	for x in [-9.0, 9.0]:
+		draw_rect(Rect2(x - 1.5, -11, 3, 22), Color("2f2f34"))  # iron straps
+	draw_rect(Rect2(-16, -11, 32, 22), Color("1d1209"), false, 1.5)
+	if opened:
+		# Lid thrown back: dark empty inside, lid flipped up along the top edge.
+		draw_rect(Rect2(-13, -8, 26, 17), Color("2a1a0c"))
+		draw_rect(Rect2(-13, -8, 26, 17), Color("1a1008"), false, 1.5)
+		draw_rect(Rect2(-16, -19, 32, 8), Color("84522c"))
+		draw_rect(Rect2(-16, -19, 32, 8), Color("1d1209"), false, 1.5)
+		return
+	draw_rect(Rect2(-2.5, 7, 5, 4), Color("d4b050"))  # lock plate
+	draw_circle(Vector2(0, 9), 0.9, Color("3a2a10"))
+
+
+## Rolled-out blanket with a pillow; colour picked from the seed.
+func _draw_bedroll(rng: RandomNumberGenerator) -> void:
+	var cols := [Color("7a3a30"), Color("3d5f7a"), Color("5c6b3a"), Color("8a6a3a")]
+	var c: Color = cols[rng.randi() % cols.size()]
+	draw_rect(Rect2(Vector2(-14, -26) + _u(Vector2(2, 3)), Vector2(28, 52)), Color(0, 0, 0, 0.22))
+	draw_rect(Rect2(-14, -26, 28, 52), c)
+	draw_rect(Rect2(-14, -6, 28, 32), c.darkened(0.15))  # folded-back top blanket
+	for y in [-2.0, 10.0, 22.0]:
+		draw_line(Vector2(-14, y), Vector2(14, y), c.lightened(0.2), 1.0)  # woven stripes
+	draw_rect(Rect2(-14, -26, 28, 52), c.darkened(0.5), false, 1.2)
+	draw_rect(Rect2(-10, -23, 20, 12), Color("e4dcc8"))  # pillow
+	draw_rect(Rect2(-10, -23, 20, 12), Color("8a8270"), false, 1.0)
+
+
+## Two or three tied burlap grain sacks.
+func _draw_sacks(rng: RandomNumberGenerator) -> void:
+	var n := 2 + rng.randi() % 2
+	for i in n:
+		var p := Vector2(-7.0 + i * 8.0, rng.randf_range(-5.0, 5.0))
+		var r := rng.randf_range(8.0, 10.0)
+		draw_circle(p + _u(Vector2(2, 3)), r, Color(0, 0, 0, 0.25))
+		draw_circle(p, r, Color("b39a6a"))
+		draw_circle(p + _u(Vector2(-2, -2)), r * 0.55, Color("c9b282"))
+		draw_arc(p, r, 0.0, TAU, 16, Color("6e5a36"), 1.2)
+		draw_circle(p, 2.2, Color("7a6440"))  # tied neck
+		draw_line(p + Vector2(-2.5, -2), p + Vector2(2.5, 2), Color("4a3a20"), 1.0)
+
+
+## Small hanging lantern; the light itself comes from the prop's light settings.
+func _draw_wagon_lantern() -> void:
+	draw_circle(Vector2.ZERO, 22.0, Color(1.0, 0.8, 0.45, 0.07))
+	draw_circle(Vector2.ZERO, 12.0, Color(1.0, 0.8, 0.45, 0.15))
+	draw_circle(_u(Vector2(2, 3)), 6.0, Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(-5, -5, 10, 10), Color("2b2b30"))
+	draw_rect(Rect2(-3.5, -3.5, 7, 7), Color("ffd27a"))
+	draw_circle(Vector2.ZERO, 1.8, Color("fff4c8"))
+	draw_line(Vector2(-5, 0), Vector2(5, 0), Color("2b2b30"), 1.0)
+	draw_line(Vector2(0, -5), Vector2(0, 5), Color("2b2b30"), 1.0)
+	draw_arc(Vector2(0, -6), 3.0, PI, TAU, 8, Color("2b2b30"), 1.2)  # bail handle
 
 
 # ---------------------------------------------------------------- swamp theme

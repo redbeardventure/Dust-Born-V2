@@ -4,9 +4,9 @@ extends Node2D
 ## Tools: Select, Polygon, Rectangle, Wall, Prop, Light, Spawn, NPC.
 ## Right or middle mouse drag = pan, wheel = zoom, arrows = pan. Ctrl+Z / Ctrl+Y undo / redo, Ctrl+S save.
 
-enum Tool { SELECT, POLYGON, RECT, WALL, PROP, LIGHT, SPAWN, NPC, OPENING }
+enum Tool { SELECT, POLYGON, RECT, WALL, PROP, LIGHT, SPAWN, NPC, OPENING, ROOF }
 
-const TOOL_NAMES := ["Select (V)", "Polygon (P)", "Rectangle (R)", "Wall (W)", "Prop (O)", "Light (L)", "Spawn (T)", "NPC (N)", "Door / Window (D)"]
+const TOOL_NAMES := ["Select (V)", "Polygon (P)", "Rectangle (R)", "Wall (W)", "Prop (O)", "Light (L)", "Spawn (T)", "NPC (N)", "Door / Window (D)", "Roof (H)"]
 const PATROL_HINT := "PATROL AREA: click to add points. Click the first point, press Enter or right-click to close. Backspace removes the last point, Esc cancels."
 const TOOL_HINTS := [
 	"SELECT: click to select, drag to move. Drag white handles to edit points. Double-click an edge to add a point, right-click a point to remove it. Del deletes. [ ] change draw order.",
@@ -18,6 +18,7 @@ const TOOL_HINTS := [
 	"SPAWN: click to set the player start position.",
 	"NPC: click to place a non-player character with the settings at the top. Select it, then use 'Draw patrol area' to set where it wanders.",
 	"DOOR / WINDOW: click on a wall to set a door or window into it (it snaps to the wall and cuts a gap). Windows let light through; doors can be opened or kicked open in play-test.",
+	"ROOF: click to add points. Click the first point, press Enter or right-click to close. Roofs sit above everything: they vanish when the player walks under them, and you can see inside through windows and open doors. Use the roof button below the tools to show / hide them.",
 ]
 const GRID := 32.0
 const HANDLE_PX := 7.0
@@ -74,6 +75,9 @@ var palette := "fantasy"  # which theme's items the terrain/prop lists show ("al
 var scale_spin: SpinBox
 var rot_spin: SpinBox
 var rand_check: CheckBox
+var prop_loot_opt: OptionButton
+var prop_loot_row: HBoxContainer
+var prop_loot_panel: PanelContainer
 var radius_slider: HSlider
 var energy_slider: HSlider
 var light_color: ColorPickerButton
@@ -93,6 +97,10 @@ var sel_bar: PanelContainer
 var prop_bar: PanelContainer
 var wall_bar: PanelContainer
 var terrain_bar: PanelContainer
+var roof_bar: PanelContainer
+var roof_opt: OptionButton
+var roof_keys: Array = []
+var roof_toggle: Button
 var npc_bar: PanelContainer
 var npc_name_edit: LineEdit
 var npc_weapon_opt: OptionButton
@@ -212,8 +220,64 @@ func _spin(parent: Control, text: String, lo: float, hi: float, val: float, step
 	s.value = val
 	if cb.is_valid():
 		s.value_changed.connect(cb)
+	_inline_spin_arrows(s)
 	_row(parent, text, s)
 	return s
+
+
+## Draws a SpinBox's up/down arrows inside its input box (one shared frame) instead of
+## as a separate column next to it.
+func _inline_spin_arrows(s: SpinBox) -> void:
+	var le := s.get_line_edit()
+	var base := le.get_theme_stylebox("normal")
+	var field: StyleBoxFlat
+	if base is StyleBoxFlat:
+		field = (base as StyleBoxFlat).duplicate()
+	else:
+		field = StyleBoxFlat.new()
+		field.bg_color = Color(0.1, 0.11, 0.13)
+		field.border_color = Color(0.3, 0.32, 0.38)
+		field.set_border_width_all(1)
+		field.set_corner_radius_all(3)
+		field.set_content_margin_all(4)
+	# Input part: open on the right so it joins the arrow column.
+	var left := field.duplicate() as StyleBoxFlat
+	left.border_width_right = 0
+	left.corner_radius_top_right = 0
+	left.corner_radius_bottom_right = 0
+	le.add_theme_stylebox_override("normal", left)
+	le.add_theme_stylebox_override("read_only", left)
+	le.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	# Arrow column: same fill and border, open on the left, split into an up and a down half.
+	var up := field.duplicate() as StyleBoxFlat
+	up.border_width_left = 0
+	up.border_width_bottom = 0
+	up.corner_radius_top_left = 0
+	up.corner_radius_bottom_left = 0
+	up.corner_radius_bottom_right = 0
+	up.set_content_margin_all(0)
+	var down := field.duplicate() as StyleBoxFlat
+	down.border_width_left = 0
+	down.border_width_top = 0
+	down.corner_radius_top_left = 0
+	down.corner_radius_bottom_left = 0
+	down.corner_radius_top_right = 0
+	down.set_content_margin_all(0)
+	for pair in [["up", up], ["down", down]]:
+		var name_p: String = pair[0]
+		var sb: StyleBoxFlat = pair[1]
+		var hov := sb.duplicate() as StyleBoxFlat
+		hov.bg_color = sb.bg_color.lightened(0.12)
+		var prs := sb.duplicate() as StyleBoxFlat
+		prs.bg_color = sb.bg_color.lightened(0.22)
+		s.add_theme_stylebox_override(name_p + "_background", sb)
+		s.add_theme_stylebox_override(name_p + "_background_disabled", sb)
+		s.add_theme_stylebox_override(name_p + "_background_hovered", hov)
+		s.add_theme_stylebox_override(name_p + "_background_pressed", prs)
+	s.add_theme_stylebox_override("field_and_buttons_separator", StyleBoxEmpty.new())
+	s.add_theme_stylebox_override("up_down_buttons_separator", StyleBoxEmpty.new())
+	s.add_theme_constant_override("field_and_buttons_separation", 0)
+	s.add_theme_constant_override("buttons_vertical_separation", 0)
 
 
 func _slider(parent: Control, text: String, lo: float, hi: float, val: float, step: float, cb: Callable) -> HSlider:
@@ -246,6 +310,16 @@ func _build_tool_bar() -> void:
 		b.tooltip_text = TOOL_NAMES[i]
 		b.focus_mode = Control.FOCUS_NONE
 		b.pressed.connect(_set_tool.bind(i))
+		# Active tool: bright gold border on a lighter blue fill, so it stands out from the others.
+		var active := StyleBoxFlat.new()
+		active.bg_color = Color(0.22, 0.36, 0.58)
+		active.border_color = Color(1.0, 0.82, 0.25)
+		active.set_border_width_all(3)
+		active.set_corner_radius_all(6)
+		active.shadow_color = Color(1.0, 0.8, 0.2, 0.45)
+		active.shadow_size = 4
+		b.add_theme_stylebox_override("pressed", active)
+		b.add_theme_stylebox_override("hover_pressed", active)
 		var ic := Control.new()
 		ic.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -254,6 +328,26 @@ func _build_tool_bar() -> void:
 		col.add_child(b)
 		tool_buttons.append(b)
 	tool_buttons[0].button_pressed = true
+	# Roof visibility toggle: not a tool, so it stays out of the tool button group.
+	col.add_child(HSeparator.new())
+	roof_toggle = Button.new()
+	roof_toggle.toggle_mode = true
+	roof_toggle.button_pressed = true
+	roof_toggle.custom_minimum_size = Vector2(44, 44)
+	roof_toggle.tooltip_text = "Show / hide roofs"
+	roof_toggle.focus_mode = Control.FOCUS_NONE
+	var roof_ic := Control.new()
+	roof_ic.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	roof_ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	roof_ic.draw.connect(_draw_roof_toggle_icon.bind(roof_ic))
+	roof_toggle.add_child(roof_ic)
+	roof_toggle.toggled.connect(func(on: bool) -> void:
+		renderer.set_roofs_visible(on)
+		if not on and sel_kind == "roof":
+			_select("", -1)
+		roof_ic.queue_redraw()
+		overlay.queue_redraw())
+	col.add_child(roof_toggle)
 	# Anchor to the left edge, vertically centred.
 	bar.anchor_left = 0.0
 	bar.anchor_right = 0.0
@@ -392,6 +486,17 @@ func _build_prop_bar() -> void:
 	scale_spin = _spin(row, "Scale", 0.2, 4.0, 1.0, 0.05, _on_prop_scale)
 	rot_spin = _spin(row, "Rotate", -180, 180, 0, 5, _on_prop_rot)
 	rand_check = _check(row, "Randomize on place", true)
+	# Loot inside the prop: only shown for props that can hold it (barrels and crates).
+	# It gets its own panel in the top stack, so it wraps onto a second line instead of running off-screen.
+	prop_loot_panel = PanelContainer.new()
+	prop_loot_panel.visible = false
+	_top_stack().add_child(prop_loot_panel)
+	prop_loot_row = HBoxContainer.new()
+	prop_loot_panel.add_child(prop_loot_row)
+	prop_loot_opt = _option(MapData.NPC_LOOT)
+	prop_loot_opt.custom_minimum_size.x = 120
+	prop_loot_opt.item_selected.connect(_on_prop_loot)
+	_row(prop_loot_row, "Loot", prop_loot_opt, 40)
 	# Scatter settings stay hidden; _scatter() still reads this value.
 	scatter_spin = SpinBox.new()
 	scatter_spin.min_value = 5
@@ -412,6 +517,36 @@ func _build_terrain_bar() -> void:
 	terrain_opt.custom_minimum_size.x = 200
 	terrain_opt.item_selected.connect(_on_terrain_selected)
 	_row(row, "Terrain", terrain_opt)
+
+
+## Roof texture bar. Shown while a roof is selected or the Roof tool is active.
+func _build_roof_bar() -> void:
+	roof_bar = PanelContainer.new()
+	roof_bar.visible = false
+	_top_stack().add_child(roof_bar)
+	var row := HBoxContainer.new()
+	roof_bar.add_child(row)
+	roof_opt = OptionButton.new()
+	roof_opt.custom_minimum_size.x = 200
+	roof_opt.add_theme_constant_override("icon_max_width", PROP_ICON_PX)
+	roof_keys = MapData.ROOFS.keys()
+	for k in roof_keys:
+		roof_opt.add_icon_item(_terrain_icon(k), str(MapData.ROOFS[k]["label"]))
+	roof_opt.select(0)
+	roof_opt.item_selected.connect(_on_roof_selected)
+	_row(row, "Roof", roof_opt)
+
+
+func _roof_key() -> String:
+	return roof_keys[maxi(roof_opt.selected, 0)]
+
+
+func _on_roof_selected(i: int) -> void:
+	if _ui_lock or sel_kind != "roof":
+		return
+	push_undo()
+	data["roofs"][sel_idx]["type"] = roof_keys[i]
+	renderer.rebuild_roofs()
 
 
 func _option(keys_to_labels: Dictionary) -> OptionButton:
@@ -647,6 +782,30 @@ func _draw_sel_icon(c: Control, kind: String) -> void:
 				c.draw_rect(e[0], edge, false, 1.2 * u)
 
 
+## House roof (pitched, two shaded halves); crossed out when roofs are hidden.
+func _draw_roof_icon(c: Control, shown: bool) -> void:
+	var s := c.size
+	var u := minf(s.x, s.y) / 44.0
+	var o := (s - Vector2(44, 44) * u) * 0.5
+	var P := func(x: float, y: float) -> Vector2:
+		return o + Vector2(x, y) * u
+	var a := 1.0 if shown else 0.45
+	c.draw_colored_polygon(PackedVector2Array([P.call(22, 9), P.call(38, 24), P.call(22, 24)]), Color(0.78, 0.4, 0.3, a))
+	c.draw_colored_polygon(PackedVector2Array([P.call(22, 9), P.call(22, 24), P.call(6, 24)]), Color(0.62, 0.3, 0.22, a))
+	c.draw_colored_polygon(PackedVector2Array([P.call(6, 24), P.call(38, 24), P.call(38, 34), P.call(6, 34)]), Color(0.7, 0.36, 0.27, a))
+	c.draw_polyline(PackedVector2Array([P.call(6, 34), P.call(6, 24), P.call(22, 9), P.call(38, 24), P.call(38, 34), P.call(6, 34)]), Color(0.15, 0.08, 0.06, a), 1.5 * u)
+	c.draw_line(P.call(22, 9), P.call(22, 24), Color(0.15, 0.08, 0.06, a), 1.5 * u)
+
+
+func _draw_roof_toggle_icon(c: Control) -> void:
+	var shown := roof_toggle == null or roof_toggle.button_pressed
+	_draw_roof_icon(c, shown)
+	if not shown:
+		var u := minf(c.size.x, c.size.y) / 44.0
+		var o := (c.size - Vector2(44, 44) * u) * 0.5
+		c.draw_line(o + Vector2(7, 38) * u, o + Vector2(37, 8) * u, Color(0.95, 0.35, 0.3), 3.0 * u)
+
+
 func _draw_tool_icon(c: Control, tool_id: int) -> void:
 	var s := c.size
 	var u := minf(s.x, s.y) / 44.0  # icon designed on a 44px button
@@ -703,6 +862,10 @@ func _draw_tool_icon(c: Control, tool_id: int) -> void:
 			c.draw_rect(Rect2(P.call(10, 8), Vector2(24, 7) * u), Color(0.62, 0.84, 0.95, 0.6))
 			c.draw_rect(Rect2(P.call(10, 8), Vector2(24, 7) * u), Color("4a3a2c"), false, 1.5 * u)
 			c.draw_line(P.call(22, 8), P.call(22, 15), Color("4a3a2c"), 1.5 * u)
+		Tool.ROOF:  # pitched roof with vertex dots
+			_draw_roof_icon(c, true)
+			for p in [P.call(6, 34), P.call(6, 24), P.call(22, 9), P.call(38, 24), P.call(38, 34)]:
+				c.draw_circle(p, 2.5 * u, white)
 		Tool.NPC:  # person with a dashed patrol loop
 			var green := Color("4caf5a")
 			c.draw_circle(P.call(22, 18), 7.0 * u, green)
@@ -771,6 +934,7 @@ func _build_ui() -> void:
 	_build_history_bar()
 
 	_build_terrain_bar()
+	_build_roof_bar()
 	_build_wall_bar()
 	_build_prop_bar()
 	_build_npc_bar()
@@ -869,6 +1033,8 @@ func _zoom_at(f: float) -> void:
 func _sel_points() -> PackedVector2Array:
 	if sel_kind == "polygon":
 		return data["polygons"][sel_idx]["points"]
+	if sel_kind == "roof":
+		return data["roofs"][sel_idx]["points"]
 	if sel_kind == "wall":
 		return data["walls"][sel_idx]["points"]
 	if sel_kind == "npc":
@@ -878,17 +1044,20 @@ func _sel_points() -> PackedVector2Array:
 
 ## True when the selection has editable points (polygon / wall outline or an NPC's patrol area).
 func _has_points() -> bool:
-	return sel_kind == "polygon" or sel_kind == "wall" or sel_kind == "npc"
+	return sel_kind == "polygon" or sel_kind == "roof" or sel_kind == "wall" or sel_kind == "npc"
 
 
 func _sel_closed() -> bool:
-	return sel_kind == "polygon" or sel_kind == "npc" or (sel_kind == "wall" and data["walls"][sel_idx]["closed"])
+	return sel_kind == "polygon" or sel_kind == "roof" or sel_kind == "npc" or (sel_kind == "wall" and data["walls"][sel_idx]["closed"])
 
 
 func _set_sel_points(pts: PackedVector2Array) -> void:
 	if sel_kind == "polygon":
 		data["polygons"][sel_idx]["points"] = pts
 		renderer.rebuild_terrain()
+	elif sel_kind == "roof":
+		data["roofs"][sel_idx]["points"] = pts
+		renderer.rebuild_roofs()
 	elif sel_kind == "wall":
 		data["walls"][sel_idx]["points"] = pts
 		renderer.rebuild_walls()
@@ -901,6 +1070,8 @@ func _rebuild_kind(kind: String) -> void:
 	match kind:
 		"polygon":
 			renderer.rebuild_terrain()
+		"roof":
+			renderer.rebuild_roofs()
 		"wall":
 			renderer.rebuild_walls()
 		"prop":
@@ -960,6 +1131,12 @@ func _pick(pos: Vector2) -> Array:
 		var w: Dictionary = data["walls"][i]
 		if MapData.dist_to_path(pos, w["points"], w["closed"]) < float(w["width"]) * 0.5 + 8.0 / z:
 			return ["wall", i]
+	# Roofs cover everything, so they are picked last: things under a roof stay selectable.
+	if renderer.roofs_visible:
+		for i in range(data["roofs"].size() - 1, -1, -1):
+			var rpts: PackedVector2Array = data["roofs"][i]["points"]
+			if rpts.size() >= 3 and Geometry2D.is_point_in_polygon(pos, rpts):
+				return ["roof", i]
 	for i in range(data["polygons"].size() - 1, -1, -1):
 		var pts: PackedVector2Array = data["polygons"][i]["points"]
 		if pts.size() >= 3 and Geometry2D.is_point_in_polygon(pos, pts):
@@ -1038,6 +1215,8 @@ func _sync_ui() -> void:
 			if not terrain_keys.has(ptype):
 				_set_palette("all")
 			terrain_opt.select(maxi(terrain_keys.find(ptype), 0))
+		"roof":
+			roof_opt.select(maxi(roof_keys.find(str(data["roofs"][sel_idx]["type"])), 0))
 		"wall":
 			wall_width.set_value_no_signal(data["walls"][sel_idx]["width"])
 			wall_style_opt.select(maxi(MapData.WALL_STYLE_ORDER.find(data["walls"][sel_idx].get("style", "wall")), 0))
@@ -1048,6 +1227,7 @@ func _sync_ui() -> void:
 			prop_opt.select(maxi(prop_keys.find(pr["type"]), 0))
 			scale_spin.set_value_no_signal(pr["scale"])
 			rot_spin.set_value_no_signal(rad_to_deg(float(pr["rot"])))
+			prop_loot_opt.select(maxi(MapData.NPC_LOOT.keys().find(str(pr.get("loot", "none"))), 0))
 		"light":
 			var l: Dictionary = data["lights"][sel_idx]
 			radius_slider.set_value_no_signal(l["radius"])
@@ -1077,10 +1257,13 @@ func _update_light_box() -> void:
 		light_box.visible = sel_kind == "light" or cur_tool == Tool.LIGHT
 	if terrain_bar != null:
 		terrain_bar.visible = sel_kind == "polygon" or cur_tool == Tool.POLYGON or cur_tool == Tool.RECT
+	if roof_bar != null:
+		roof_bar.visible = sel_kind == "roof" or cur_tool == Tool.ROOF
 	if wall_bar != null:
 		wall_bar.visible = sel_kind == "wall" or cur_tool == Tool.WALL or cur_tool == Tool.RECT
 	if prop_bar != null:
 		prop_bar.visible = sel_kind == "prop" or cur_tool == Tool.PROP
+		_update_prop_loot_row()
 	if opening_bar != null:
 		opening_bar.visible = sel_kind == "opening" or cur_tool == Tool.OPENING
 	if npc_bar != null:
@@ -1223,6 +1406,8 @@ func _set_tool(t: int) -> void:
 	drawing_patrol = false
 	rect_active = false
 	tool_buttons[t].set_pressed_no_signal(true)
+	if t == Tool.ROOF and roof_toggle != null and not roof_toggle.button_pressed:
+		roof_toggle.button_pressed = true  # drawing a roof you can't see makes no sense
 	_update_light_box()
 	overlay.queue_redraw()
 
@@ -1237,10 +1422,33 @@ func _on_terrain_selected(i: int) -> void:
 
 func _on_prop_selected(i: int) -> void:
 	if _ui_lock or sel_kind != "prop":
+		_update_prop_loot_row()  # Prop tool: the prop about to be placed may now hold loot
 		return
 	push_undo()
 	data["props"][sel_idx]["type"] = prop_keys[i]
+	if not MapData.LOOT_PROPS.has(prop_keys[i]):
+		data["props"][sel_idx]["loot"] = "none"  # a tree can't hold loot
 	renderer.rebuild_props()
+	_update_prop_loot_row()
+
+
+func _on_prop_loot(i: int) -> void:
+	if _ui_lock or sel_kind != "prop":
+		return
+	push_undo()
+	data["props"][sel_idx]["loot"] = MapData.NPC_LOOT.keys()[i]
+
+
+## The Loot dropdown shows for barrels/crates: the selected prop, or the one the Prop tool will place.
+func _update_prop_loot_row() -> void:
+	if prop_loot_panel == null:
+		return
+	var key := ""
+	if sel_kind == "prop":
+		key = str(data["props"][sel_idx]["type"])
+	elif not prop_keys.is_empty():
+		key = _prop_key()
+	prop_loot_panel.visible = prop_bar.visible and MapData.LOOT_PROPS.has(key)
 
 
 func _on_prop_scale(v: float) -> void:
@@ -1406,7 +1614,7 @@ func _on_mouse_motion(e: InputEventMouseMotion) -> void:
 		push_undo()
 		drag_origin = _mw()
 		match sel_kind:
-			"polygon", "wall":
+			"polygon", "roof", "wall":
 				drag_orig_points = _sel_points()
 			"prop":
 				drag_orig_pos = data["props"][sel_idx]["pos"]
@@ -1487,6 +1695,8 @@ func _on_key(e: InputEventKey) -> void:
 			_set_tool(Tool.NPC)
 		KEY_D:
 			_set_tool(Tool.OPENING)
+		KEY_H:
+			_set_tool(Tool.ROOF)
 
 
 func _left_press(e: InputEventMouseButton) -> void:
@@ -1495,7 +1705,7 @@ func _left_press(e: InputEventMouseButton) -> void:
 	match cur_tool:
 		Tool.SELECT:
 			_select_press(pos, e.double_click)
-		Tool.POLYGON, Tool.WALL:
+		Tool.POLYGON, Tool.WALL, Tool.ROOF:
 			_path_click(sp)
 		Tool.RECT:
 			rect_start = sp
@@ -1535,7 +1745,7 @@ func _right_press() -> void:
 	if cur_tool == Tool.SELECT and _has_points():
 		var pts := _sel_points()
 		var vi := _vertex_at(pts, _mw())
-		var min_pts := 3 if sel_kind == "polygon" else 2
+		var min_pts := 3 if sel_kind == "polygon" or sel_kind == "roof" else 2
 		if vi >= 0 and pts.size() > min_pts:
 			push_undo()
 			var np := PackedVector2Array(pts)
@@ -1572,7 +1782,7 @@ func _select_press(pos: Vector2, dbl: bool) -> void:
 	drag_press_screen = get_viewport().get_mouse_position()
 	drag_origin = pos
 	match sel_kind:
-		"polygon", "wall":
+		"polygon", "roof", "wall":
 			drag_orig_points = _sel_points()
 		"prop":
 			drag_orig_pos = data["props"][sel_idx]["pos"]
@@ -1591,13 +1801,13 @@ func _do_move(pos: Vector2, snap: bool = false) -> void:
 	var delta := pos - drag_origin
 	if snap and _snap_on():
 		match sel_kind:
-			"polygon", "wall":
+			"polygon", "roof", "wall":
 				if drag_orig_points.size() > 0:
 					delta = _snap(drag_orig_points[0] + delta) - drag_orig_points[0]
 			"prop", "light", "npc":
 				delta = _snap(drag_orig_pos + delta) - drag_orig_pos
 	match sel_kind:
-		"polygon", "wall":
+		"polygon", "roof", "wall":
 			var np := PackedVector2Array()
 			for p in drag_orig_points:
 				np.append(p + delta)
@@ -1656,6 +1866,13 @@ func _finish_path(closed: bool) -> void:
 		data["polygons"].append(MapData.new_poly(_terrain_key(), pts))
 		renderer.rebuild_terrain()
 		_select("polygon", data["polygons"].size() - 1)
+	elif cur_tool == Tool.ROOF:
+		if pts.size() < 3:
+			return
+		push_undo()
+		data["roofs"].append(MapData.new_roof(_roof_key(), pts))
+		renderer.rebuild_roofs()
+		_select("roof", data["roofs"].size() - 1)
 	elif cur_tool == Tool.WALL:
 		if pts.size() < 2:
 			return
@@ -1690,7 +1907,10 @@ func _place_prop(p: Vector2) -> void:
 	if rand_check.button_pressed:
 		sc *= randf_range(0.8, 1.25)
 		rot = randf() * TAU
-	data["props"].append(MapData.new_prop(_prop_key(), p, sc, rot))
+	var loot := "none"
+	if MapData.LOOT_PROPS.has(_prop_key()):
+		loot = MapData.NPC_LOOT.keys()[maxi(prop_loot_opt.selected, 0)]
+	data["props"].append(MapData.new_prop(_prop_key(), p, sc, rot, -1, loot))
 	renderer.rebuild_props()
 	_select("prop", data["props"].size() - 1)
 
@@ -1718,7 +1938,7 @@ func _delete_selected() -> void:
 	if sel_kind == "" or drawing_patrol:
 		return
 	push_undo()
-	var key := {"polygon": "polygons", "wall": "walls", "prop": "props", "light": "lights", "npc": "npcs", "opening": "openings"}[sel_kind] as String
+	var key := {"polygon": "polygons", "roof": "roofs", "wall": "walls", "prop": "props", "light": "lights", "npc": "npcs", "opening": "openings"}[sel_kind] as String
 	data[key].remove_at(sel_idx)
 	var kind := sel_kind
 	_select("", -1)
@@ -1728,7 +1948,7 @@ func _delete_selected() -> void:
 func _reorder(dir: int) -> void:
 	if sel_kind == "" or sel_kind == "light" or sel_kind == "npc" or sel_kind == "opening":
 		return
-	var key := {"polygon": "polygons", "wall": "walls", "prop": "props"}[sel_kind] as String
+	var key := {"polygon": "polygons", "roof": "roofs", "wall": "walls", "prop": "props"}[sel_kind] as String
 	var arr: Array = data[key]
 	var j := sel_idx + dir
 	if j < 0 or j >= arr.size():
@@ -1887,7 +2107,7 @@ func draw_overlay(o: Node2D) -> void:
 			o.draw_arc(mouse, rad, 0.0, TAU, 32, Color(1, 1, 1, 0.6), lw)
 		Tool.LIGHT:
 			o.draw_arc(mouse, radius_slider.value, 0.0, TAU, 48, Color(1, 0.85, 0.4, 0.5), lw)
-		Tool.POLYGON, Tool.WALL, Tool.RECT:
+		Tool.POLYGON, Tool.WALL, Tool.RECT, Tool.ROOF:
 			o.draw_circle(mouse, 3.0 / z, sel_col)
 		Tool.OPENING:
 			# Preview where the opening will land (snapped onto the nearest wall).
@@ -1915,8 +2135,8 @@ func _handle(o: Node2D, p: Vector2, z: float) -> void:
 func _draw_selection(o: Node2D, z: float, lw: float) -> void:
 	var col := Color(1.0, 0.85, 0.2)
 	match sel_kind:
-		"polygon", "wall":
-			if sel_idx < 0 or sel_idx >= data["polygons" if sel_kind == "polygon" else "walls"].size():
+		"polygon", "roof", "wall":
+			if sel_idx < 0 or sel_idx >= data[{"polygon": "polygons", "roof": "roofs", "wall": "walls"}[sel_kind]].size():
 				return
 			var pts := PackedVector2Array(_sel_points())
 			if pts.size() < 2:

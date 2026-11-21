@@ -12,6 +12,79 @@ const RANGED := {
 	"shotgun": {"label": "Shotgun", "shot": "pellet", "speed": 850.0, "damage": 9, "pellets": 7, "cooldown": 1.3, "range": 320.0, "spread": 0.22, "mag": 4, "reload": 2.8},
 }
 
+## Image icons for GUI buttons (weapons not listed here use the drawn icon from draw_icon()).
+const ICON_IMAGES := {
+	"pistol": "res://assets/revolver_russian.svg",
+}
+
+
+## In-hand images drawn on the player instead of the line art. Each image is top-down with the
+## barrel pointing up (-y); `grip` = pixel where the hand is, `scale` = image pixels -> world pixels.
+## The grip is placed `reach` px in front of the body centre and `side` px to the character's
+## right (negative = left hand).
+const HELD_IMAGES := {
+	"pistol": {"path": "res://assets/Hand_Revolver_Russian.png", "grip": Vector2(30, 39), "scale": 0.65, "reach": 11.0, "side": 6.0},
+	# Long guns (64x128 images): hand on the rear grip at the bottom, barrel tip at y = 0.
+	"rifle": {"path": "res://assets/Hand_Rifle_.png", "grip": Vector2(32, 60), "scale": 0.55, "reach": 6.0, "side": 5.0},
+	"shotgun": {"path": "res://assets/Hand_Shotgun_.png", "grip": Vector2(30, 57), "scale": 0.55, "reach": 6.0, "side": 5.0},
+}
+
+
+## Loaded in-hand textures, kept here so they stay alive. A texture loaded into a local variable
+## inside _draw() is freed when _draw() returns, and the canvas then renders it as a white box.
+static var _held_cache := {}
+
+
+static func _held_texture(path: String) -> Texture2D:
+	if not _held_cache.has(path):
+		_held_cache[path] = load(path) as Texture2D if ResourceLoader.exists(path) else null
+	return _held_cache[path]
+
+
+## Draws the in-hand image for `key` if there is one; returns false when the caller should use line art.
+## `body_scale` scales the image and its position about the body centre (used for the walking step pulse).
+## Leaves the canvas draw transform reset to identity.
+static func draw_held_image(ci: CanvasItem, key: String, facing: Vector2, base: Vector2, body_scale: float = 1.0) -> bool:
+	if not HELD_IMAGES.has(key):
+		return false
+	var h: Dictionary = HELD_IMAGES[key]
+	var tex := _held_texture(h["path"])
+	if tex == null:
+		return false
+	var s: float = h["scale"]
+	# Character's right side, in y-down screen space: facing (1, 0) -> right hand is at (0, 1).
+	var right := Vector2(-facing.y, facing.x)
+	var grip_at := facing * float(h.get("reach", 0.0)) + right * float(h.get("side", 0.0))
+	if not h.has("reach"):
+		grip_at = base
+	s *= body_scale
+	grip_at *= body_scale
+	ci.draw_set_transform(grip_at, facing.angle() + PI * 0.5, Vector2(s, s))  # image "up" -> facing
+	ci.draw_texture(tex, -(h["grip"] as Vector2))
+	ci.draw_set_transform_matrix(Transform2D.IDENTITY)
+	return true
+
+
+## Muzzle position relative to the body centre for a weapon drawn with an in-hand image
+## (the barrel tip is the top of the image, y = 0). Vector2.ZERO when there is no image.
+static func muzzle_offset(key: String, facing: Vector2) -> Vector2:
+	if not HELD_IMAGES.has(key) or not HELD_IMAGES[key].has("reach"):
+		return Vector2.ZERO
+	var h: Dictionary = HELD_IMAGES[key]
+	var right := Vector2(-facing.y, facing.x)
+	var grip: Vector2 = h["grip"]
+	var reach := float(h["reach"]) + grip.y * float(h["scale"])
+	return facing * reach + right * float(h["side"])
+
+
+## Image icon for `key`, or null when it has none (or the file is missing).
+static func icon_texture(key: String) -> Texture2D:
+	var path: String = ICON_IMAGES.get(key, "")
+	if path == "" or not ResourceLoader.exists(path):
+		return null
+	return load(path) as Texture2D
+
+
 ## Choices offered to the player, in button order.
 const PLAYER_CHOICES := ["none", "pistol", "shotgun", "rifle"]
 
