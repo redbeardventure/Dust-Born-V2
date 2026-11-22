@@ -9,7 +9,7 @@ enum Tool { SELECT, POLYGON, RECT, WALL, PROP, LIGHT, SPAWN, NPC, OPENING, ROOF 
 const TOOL_NAMES := ["Select (V)", "Polygon (P)", "Rectangle (R)", "Wall (W)", "Prop (O)", "Light (L)", "Spawn (T)", "NPC (N)", "Door / Window (D)", "Roof (H)"]
 const PATROL_HINT := "PATROL AREA: click to add points. Click the first point, press Enter or right-click to close. Backspace removes the last point, Esc cancels."
 const TOOL_HINTS := [
-	"SELECT: click to select, drag to move. Drag white handles to edit points. Double-click an edge to add a point, right-click a point to remove it. Del deletes. [ ] change draw order.",
+	"SELECT: click to select, drag to move. Drag white handles to edit points. Double-click an edge to add a point, right-click a point to remove it. Del deletes. [ ] change draw order. C copies, V pastes at the cursor. Drag on empty ground or an unselected floor to box-select (Shift adds; Shift-click toggles one). Ctrl+G groups, Ctrl+Shift+G ungroups, Ctrl+A selects all. Q / E rotate the selection 15° (hold to keep turning).",
 	"POLYGON: click to add points. Click the first point, press Enter or right-click to close. Backspace removes the last point, Esc cancels.",
 	"RECTANGLE: drag to draw a rectangular room/area. 'Auto-walls' also builds walls around it.",
 	"WALL: click to add points. Click the first point to close the loop, Enter or right-click to finish an open wall.",
@@ -18,7 +18,7 @@ const TOOL_HINTS := [
 	"SPAWN: click to set the player start position.",
 	"NPC: click to place a non-player character with the settings at the top. Select it, then use 'Draw patrol area' to set where it wanders.",
 	"DOOR / WINDOW: click on a wall to set a door or window into it (it snaps to the wall and cuts a gap). Windows let light through; doors can be opened or kicked open in play-test.",
-	"ROOF: click to add points. Click the first point, press Enter or right-click to close. Roofs sit above everything: they vanish when the player walks under them, and you can see inside through windows and open doors. Use the roof button below the tools to show / hide them.",
+	"ROOF: click to add points. Click the first point, press Enter or right-click to close. Roofs sit above everything. In play-test the whole roof lifts when one of its doors is opened (and stays off), while the player is near one of its windows, or when the player walks under it (a roof with no doors then stays off too). Use the roof button below the tools to show / hide them.",
 ]
 const GRID := 32.0
 const HANDLE_PX := 7.0
@@ -77,6 +77,7 @@ var rot_spin: SpinBox
 var rand_check: CheckBox
 var prop_loot_opt: OptionButton
 var prop_loot_row: HBoxContainer
+var prop_lock_check: CheckBox
 var prop_loot_panel: PanelContainer
 var radius_slider: HSlider
 var energy_slider: HSlider
@@ -101,6 +102,19 @@ var roof_bar: PanelContainer
 var roof_opt: OptionButton
 var roof_keys: Array = []
 var roof_toggle: Button
+var copy_btn: Button
+var paste_btn: Button
+## Copied object: {"kind": sel_kind, "item": deep copy of its data}; empty = nothing copied.
+var clipboard := {}
+var _paste_count := 0  # pastes from the toolbar button step further from the original each time
+## Multi-selection ([[kind, idx], ...]) while sel_kind == "multi".
+var multi: Array = []
+var drag_multi_orig: Array = []  # copies of the multi-selected items when a drag starts
+var marquee_start := Vector2.ZERO
+var _pending_hit: Array = []  # area (polygon / roof) under a press: selected on click, box-select on drag
+var group_btn: Button
+var ungroup_btn: Button
+const ROTATE_STEP_DEG := 15.0  # rotate buttons and Q / E turn the selection by this much
 var npc_bar: PanelContainer
 var npc_name_edit: LineEdit
 var npc_weapon_opt: OptionButton
@@ -110,6 +124,8 @@ var opening_width: SpinBox
 var npc_head_opt: OptionButton
 var npc_loot_opt: OptionButton
 var npc_disp_opt: OptionButton
+var npc_bounty_check: CheckBox
+var npc_hp_spin: SpinBox
 var patrol_btn: Button
 var clear_patrol_btn: Button
 var scene_panel: PanelContainer
@@ -398,7 +414,9 @@ func _build_history_bar() -> void:
 	menu_icon.draw.connect(_draw_history_icon.bind(menu_icon, "menu"))
 	menu.add_child(menu_icon)
 	row.add_child(menu)
-	var defs := [["Save (Ctrl+S)", "save", _save], ["Undo (Ctrl+Z)", "undo", undo], ["Redo (Ctrl+Y)", "redo", redo], ["Play-test this map", "play", _play]]
+	var defs := [["Save (Ctrl+S)", "save", _save], ["Undo (Ctrl+Z)", "undo", undo], ["Redo (Ctrl+Y)", "redo", redo],
+			["Copy selected (C / Ctrl+C)", "copy", _copy_selected], ["Paste (V / Ctrl+V)", "paste", _paste.bind(false)],
+			["Play-test this map", "play", _play]]
 	for d in defs:
 		var b := Button.new()
 		b.custom_minimum_size = Vector2(44, 44)
@@ -411,6 +429,11 @@ func _build_history_bar() -> void:
 		ic.draw.connect(_draw_history_icon.bind(ic, d[1]))
 		b.add_child(ic)
 		row.add_child(b)
+		if d[1] == "copy":
+			copy_btn = b
+		elif d[1] == "paste":
+			paste_btn = b
+	_update_clip_buttons()
 	bar.offset_left = 8
 	bar.offset_top = 8
 
@@ -462,6 +485,25 @@ func _draw_history_icon(c: Control, kind: String) -> void:
 	if kind == "play":
 		c.draw_colored_polygon(PackedVector2Array([P.call(15, 10), P.call(15, 34), P.call(35, 22)]), Color(0.4, 0.9, 0.5))
 		return
+	var dim := Color(col, 0.35) if c.get_parent() is Button and (c.get_parent() as Button).disabled else col
+	if kind == "copy":  # two overlapping sheets
+		var back := Color(0.2, 0.22, 0.26)
+		c.draw_rect(Rect2(P.call(10, 8), Vector2(18, 22) * u), back)
+		c.draw_rect(Rect2(P.call(10, 8), Vector2(18, 22) * u), dim, false, 2.0 * u)
+		c.draw_rect(Rect2(P.call(17, 15), Vector2(18, 22) * u), back)
+		c.draw_rect(Rect2(P.call(17, 15), Vector2(18, 22) * u), dim, false, 2.0 * u)
+		for y in [21.0, 26.0, 31.0]:
+			c.draw_line(P.call(21, y), P.call(31, y), Color(dim, dim.a * 0.6), 1.5 * u)
+		return
+	if kind == "paste":  # clipboard with a sheet on it
+		var board := Color(0.62, 0.45, 0.28, dim.a)
+		c.draw_rect(Rect2(P.call(10, 10), Vector2(24, 27) * u), board)
+		c.draw_rect(Rect2(P.call(10, 10), Vector2(24, 27) * u), Color(0.15, 0.1, 0.05, dim.a), false, 1.5 * u)
+		c.draw_rect(Rect2(P.call(17, 7), Vector2(10, 6) * u), Color(0.75, 0.75, 0.8, dim.a))  # clip
+		c.draw_rect(Rect2(P.call(14, 15), Vector2(16, 18) * u), dim)  # sheet
+		for y in [20.0, 24.0, 28.0]:
+			c.draw_line(P.call(17, y), P.call(27, y), Color(0.45, 0.45, 0.5, dim.a), 1.2 * u)
+		return
 	var arc := PackedVector2Array()
 	for i in 17:
 		var a := PI + (PI * 1.45) * float(i) / 16.0  # left side, over the top, down the right
@@ -497,6 +539,7 @@ func _build_prop_bar() -> void:
 	prop_loot_opt.custom_minimum_size.x = 120
 	prop_loot_opt.item_selected.connect(_on_prop_loot)
 	_row(prop_loot_row, "Loot", prop_loot_opt, 40)
+	prop_lock_check = _check(prop_loot_row, "Locked (needs a key)", false, _on_prop_locked)
 	# Scatter settings stay hidden; _scatter() still reads this value.
 	scatter_spin = SpinBox.new()
 	scatter_spin.min_value = 5
@@ -686,6 +729,10 @@ func _build_npc_bar() -> void:
 	npc_disp_opt = _option(MapData.NPC_DISPOSITIONS)
 	npc_disp_opt.custom_minimum_size.x = 90
 	_row(row2, "Attitude", npc_disp_opt, 52)
+	npc_hp_spin = _spin(row2, "Health", 1, 999, MapData.DEFAULT_NPC_HP, 1, func(_v: float) -> void: _on_npc_changed())
+	# Bounty: only for hostile NPCs. Killing every bounty target wins the play-test.
+	npc_bounty_check = _check(row2, "Bounty", false, func(_on: bool) -> void: _on_npc_changed())
+	npc_bounty_check.tooltip_text = "Wanted outlaw (hostile only). The play-test is won once every bounty is killed."
 	patrol_btn = _button(row2, "Draw patrol area", _start_patrol_draw)
 	clear_patrol_btn = _button(row2, "Clear patrol", _clear_patrol)
 
@@ -740,6 +787,10 @@ func _build_selection_bar() -> void:
 		["Delete (Del)", "delete", _delete_selected],
 		["Bring forward ( ] )", "forward", _reorder.bind(1)],
 		["Send back ( [ )", "back", _reorder.bind(-1)],
+		["Rotate left 15° (Q, hold to keep turning)", "rot_left", _rotate_by_field.bind(-1.0)],
+		["Rotate right 15° (E, hold to keep turning)", "rot_right", _rotate_by_field.bind(1.0)],
+		["Group: select and move together (Ctrl+G)", "group", _group_selected],
+		["Ungroup (Ctrl+Shift+G)", "ungroup", _ungroup_selected],
 	]
 	for d in defs:
 		var b := Button.new()
@@ -753,6 +804,12 @@ func _build_selection_bar() -> void:
 		ic.draw.connect(_draw_sel_icon.bind(ic, d[1]))
 		b.add_child(ic)
 		row.add_child(b)
+		if d[1] == "group":
+			group_btn = b
+		elif d[1] == "ungroup":
+			ungroup_btn = b
+		if d[1] == "rot_left" or d[1] == "rot_right":
+			b.action_mode = BaseButton.ACTION_MODE_BUTTON_PRESS  # turn on mouse-down, not on release
 
 
 func _draw_sel_icon(c: Control, kind: String) -> void:
@@ -761,7 +818,38 @@ func _draw_sel_icon(c: Control, kind: String) -> void:
 	var P := func(x: float, y: float) -> Vector2:
 		return o + Vector2(x, y) * u
 	var w := 2.0 * u
+	var off := c.get_parent() is Button and (c.get_parent() as Button).disabled
+	var gcol := Color(0.55, 0.85, 1.0, 0.35 if off else 1.0)
 	match kind:
+		"rot_left", "rot_right":  # curved arrow round a square; mirrored for right
+			var m := kind == "rot_right"
+			var Q := func(x: float, y: float) -> Vector2:
+				return P.call(44.0 - x if m else x, y)
+			var white := Color(0.95, 0.95, 0.95)
+			c.draw_rect(Rect2(P.call(16, 18), Vector2(12, 12) * u), Color(0.55, 0.85, 1.0, 0.8))
+			var arc := PackedVector2Array()
+			for i in 15:
+				var a := -PI * 0.15 - PI * 1.3 * float(i) / 14.0
+				arc.append(Q.call(22.0 + cos(a) * 13.0, 24.0 + sin(a) * 13.0))
+			c.draw_polyline(arc, white, 2.5 * u)
+			# Arrowhead at the end of the arc, pointing along it.
+			var tip: Vector2 = arc[arc.size() - 1]
+			var dir: Vector2 = (tip - arc[arc.size() - 2]).normalized()
+			var side := dir.orthogonal()
+			c.draw_colored_polygon(PackedVector2Array([tip + dir * 6.0 * u, tip + side * 5.0 * u, tip - side * 5.0 * u]), white)
+		"group", "ungroup":  # three shapes inside a dashed frame; ungroup = frame broken apart
+			c.draw_rect(Rect2(P.call(12, 13), Vector2(10, 10) * u), gcol)
+			c.draw_circle(P.call(29, 18), 5.0 * u, gcol)
+			c.draw_colored_polygon(PackedVector2Array([P.call(16, 33), P.call(22, 25), P.call(28, 33)]), gcol)
+			var fr := [P.call(7, 8), P.call(37, 8), P.call(37, 37), P.call(7, 37), P.call(7, 8)]
+			if kind == "group":
+				for i in 4:
+					c.draw_dashed_line(fr[i], fr[i + 1], Color(1.0, 0.85, 0.2, gcol.a), 1.6 * u, 4.0 * u)
+			else:
+				var red := Color(0.95, 0.4, 0.35, gcol.a)
+				for corner in [[P.call(7, 15), P.call(7, 8), P.call(14, 8)], [P.call(30, 8), P.call(37, 8), P.call(37, 15)],
+						[P.call(37, 30), P.call(37, 37), P.call(30, 37)], [P.call(14, 37), P.call(7, 37), P.call(7, 30)]]:
+					c.draw_polyline(PackedVector2Array(corner), red, 1.8 * u)
 		"delete":  # trash can
 			var red := Color(0.9, 0.35, 0.35)
 			c.draw_rect(Rect2(P.call(13, 15), Vector2(18, 20) * u), red, false, w)
@@ -1054,7 +1142,7 @@ func _sel_closed() -> bool:
 func _set_sel_points(pts: PackedVector2Array) -> void:
 	if sel_kind == "polygon":
 		data["polygons"][sel_idx]["points"] = pts
-		renderer.rebuild_terrain()
+		renderer.update_polygon(sel_idx)
 	elif sel_kind == "roof":
 		data["roofs"][sel_idx]["points"] = pts
 		renderer.rebuild_roofs()
@@ -1117,7 +1205,7 @@ func _pick(pos: Vector2) -> Array:
 		if pos.distance_to(data["lights"][i]["pos"]) < 14.0 / z:
 			return ["light", i]
 	for i in range(data["npcs"].size() - 1, -1, -1):
-		if pos.distance_to(data["npcs"][i]["pos"]) < maxf(14.0, 12.0 / z):
+		if pos.distance_to(data["npcs"][i]["pos"]) < maxf(26.0, 20.0 / z):  # generous, so NPCs are easy to grab
 			return ["npc", i]
 	for i in range(data["openings"].size() - 1, -1, -1):
 		if _in_opening(data["openings"][i], pos):
@@ -1178,6 +1266,7 @@ func _replace_data(nd: Dictionary) -> void:
 	MapData.working = nd
 	sel_kind = ""
 	sel_idx = -1
+	multi = []
 	cur_points = PackedVector2Array()
 	drawing_patrol = false
 	drag = ""
@@ -1197,6 +1286,7 @@ func _replace_data(nd: Dictionary) -> void:
 func _select(kind: String, idx: int) -> void:
 	sel_kind = kind
 	sel_idx = idx
+	multi = []
 	_sync_ui()
 
 
@@ -1207,8 +1297,15 @@ func _sync_ui() -> void:
 	file_label.text = "File: %s" % MapData.current_path.get_file()
 	if sel_kind == "":
 		sel_label.text = "Nothing selected"
+	elif sel_kind == "multi":
+		sel_label.text = "Selected: %d objects%s" % [multi.size(), "  (group)" if _sel_is_one_group() else ""]
 	else:
 		sel_label.text = "Selected: %s #%d" % [sel_kind, sel_idx]
+	if group_btn != null:
+		group_btn.disabled = _sel_list().size() < 2 or _sel_is_one_group()
+		ungroup_btn.disabled = not _sel_has_group()
+		group_btn.get_child(0).queue_redraw()
+		ungroup_btn.get_child(0).queue_redraw()
 	match sel_kind:
 		"polygon":
 			var ptype: String = data["polygons"][sel_idx]["type"]
@@ -1228,6 +1325,7 @@ func _sync_ui() -> void:
 			scale_spin.set_value_no_signal(pr["scale"])
 			rot_spin.set_value_no_signal(rad_to_deg(float(pr["rot"])))
 			prop_loot_opt.select(maxi(MapData.NPC_LOOT.keys().find(str(pr.get("loot", "none"))), 0))
+			prop_lock_check.set_pressed_no_signal(bool(pr.get("locked", false)))
 		"light":
 			var l: Dictionary = data["lights"][sel_idx]
 			radius_slider.set_value_no_signal(l["radius"])
@@ -1241,12 +1339,16 @@ func _sync_ui() -> void:
 			npc_loot_opt.select(maxi(MapData.NPC_LOOT.keys().find(n["loot"]), 0))
 			npc_disp_opt.select(maxi(MapData.NPC_DISPOSITIONS.keys().find(n["disposition"]), 0))
 			npc_head_opt.select(clampi(int(n.get("head", -1)) + 1, 0, HeadArt.count()))
+			npc_bounty_check.set_pressed_no_signal(bool(n.get("bounty", false)))
+			npc_hp_spin.set_value_no_signal(int(n.get("hp", MapData.DEFAULT_NPC_HP)))
+			_sync_bounty_check()
 		"opening":
 			var o: Dictionary = data["openings"][sel_idx]
 			opening_kind_opt.select(maxi(MapData.OPENING_KINDS.keys().find(o["kind"]), 0))
 			opening_width.set_value_no_signal(o["width"])
 	_ui_lock = false
 	sel_bar.visible = sel_kind != ""
+	_update_clip_buttons()
 	_update_light_box()
 	overlay.queue_redraw()
 
@@ -1439,6 +1541,13 @@ func _on_prop_loot(i: int) -> void:
 	data["props"][sel_idx]["loot"] = MapData.NPC_LOOT.keys()[i]
 
 
+func _on_prop_locked(on: bool) -> void:
+	if _ui_lock or sel_kind != "prop":
+		return
+	push_undo()
+	data["props"][sel_idx]["locked"] = on
+
+
 ## The Loot dropdown shows for barrels/crates: the selected prop, or the one the Prop tool will place.
 func _update_prop_loot_row() -> void:
 	if prop_loot_panel == null:
@@ -1449,6 +1558,7 @@ func _update_prop_loot_row() -> void:
 	elif not prop_keys.is_empty():
 		key = _prop_key()
 	prop_loot_panel.visible = prop_bar.visible and MapData.LOOT_PROPS.has(key)
+	prop_lock_check.visible = key == "crate" or key == "trunk"  # barrels have no lid to lock
 
 
 func _on_prop_scale(v: float) -> void:
@@ -1456,7 +1566,7 @@ func _on_prop_scale(v: float) -> void:
 		return
 	push_undo("prop_scale")
 	data["props"][sel_idx]["scale"] = v
-	renderer.rebuild_props()
+	renderer.update_prop(sel_idx)
 
 
 func _on_prop_rot(v: float) -> void:
@@ -1464,7 +1574,7 @@ func _on_prop_rot(v: float) -> void:
 		return
 	push_undo("prop_rot")
 	data["props"][sel_idx]["rot"] = deg_to_rad(v)
-	renderer.rebuild_props()
+	renderer.update_prop(sel_idx)
 
 
 func _on_wall_width(v: float) -> void:
@@ -1494,6 +1604,7 @@ func _npc_name() -> String:
 
 func _on_npc_changed() -> void:
 	if _ui_lock or sel_kind != "npc":
+		_sync_bounty_check()  # NPC tool: the box follows the attitude picked for the next NPC
 		return
 	push_undo("npc")
 	var n: Dictionary = data["npcs"][sel_idx]
@@ -1502,7 +1613,20 @@ func _on_npc_changed() -> void:
 	n["loot"] = MapData.NPC_LOOT.keys()[maxi(npc_loot_opt.selected, 0)]
 	n["disposition"] = MapData.NPC_DISPOSITIONS.keys()[maxi(npc_disp_opt.selected, 0)]
 	n["head"] = npc_head_opt.selected - 1
+	n["hp"] = int(npc_hp_spin.value)
+	n["bounty"] = npc_bounty_check.button_pressed and n["disposition"] == "hostile"
+	_sync_bounty_check()
 	renderer.rebuild_npcs()
+
+
+## The Bounty box only applies to hostile NPCs: it's disabled (and cleared) for other attitudes.
+func _sync_bounty_check() -> void:
+	if npc_bounty_check == null:
+		return
+	var hostile: bool = MapData.NPC_DISPOSITIONS.keys()[maxi(npc_disp_opt.selected, 0)] == "hostile"
+	npc_bounty_check.disabled = not hostile
+	if not hostile:
+		npc_bounty_check.set_pressed_no_signal(false)
 
 
 func _start_patrol_draw() -> void:
@@ -1560,8 +1684,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		_on_mouse_button(event)
 	elif event is InputEventMouseMotion:
 		_on_mouse_motion(event)
-	elif event is InputEventKey and event.pressed and not event.echo:
-		_on_key(event)
+	elif event is InputEventKey and event.pressed:
+		# Key repeat is only used for rotating (hold Q / E to keep turning).
+		if not event.echo or event.keycode == KEY_Q or event.keycode == KEY_E:
+			_on_key(event)
 
 
 func _on_mouse_button(e: InputEventMouseButton) -> void:
@@ -1605,6 +1731,8 @@ func _on_mouse_motion(e: InputEventMouseMotion) -> void:
 	if drag == "pan":
 		camera.position -= e.relative / camera.zoom.x
 		return
+	if drag == "marquee_pending" and e.position.distance_to(drag_press_screen) >= DRAG_START_PX:
+		drag = "marquee"
 	if drag == "move_pending" or drag == "vertex_pending":
 		if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 			drag = ""
@@ -1614,6 +1742,8 @@ func _on_mouse_motion(e: InputEventMouseMotion) -> void:
 		push_undo()
 		drag_origin = _mw()
 		match sel_kind:
+			"multi":
+				drag_multi_orig = _multi_snapshot()
 			"polygon", "roof", "wall":
 				drag_orig_points = _sel_points()
 			"prop":
@@ -1653,6 +1783,32 @@ func _on_key(e: InputEventKey) -> void:
 			if ctrl:
 				_save()
 			return
+		KEY_C:
+			_copy_selected()
+			return
+		KEY_Q, KEY_E:
+			# Rotate the selection by the degrees in the selection bar. Q = left, E = right.
+			_rotate_by_field(-1.0 if e.keycode == KEY_Q else 1.0)
+			return
+		KEY_G:
+			if ctrl:
+				if e.shift_pressed:
+					_ungroup_selected()
+				else:
+					_group_selected()
+			return
+		KEY_A:
+			if ctrl:  # select everything (visible roofs included)
+				_select_many(_objects_in_rect(Rect2(Vector2(-1e6, -1e6), Vector2(2e6, 2e6))))
+			return
+		KEY_V:
+			# Ctrl+V always pastes. Plain V pastes while the Select tool is active (selecting
+			# needs it anyway); from any other tool it still switches to Select as before.
+			if ctrl or (cur_tool == Tool.SELECT and not clipboard.is_empty()):
+				_paste(true)
+			else:
+				_set_tool(Tool.SELECT)
+			return
 		KEY_BACKSPACE:
 			if cur_points.size() > 0:
 				cur_points.resize(cur_points.size() - 1)
@@ -1670,6 +1826,8 @@ func _on_key(e: InputEventKey) -> void:
 			cur_points = PackedVector2Array()
 			drawing_patrol = false
 			rect_active = false
+			if drag == "marquee" or drag == "marquee_pending":
+				drag = ""  # cancel the selection box
 			_select("", -1)
 		KEY_BRACKETRIGHT:
 			_reorder(1)
@@ -1677,8 +1835,6 @@ func _on_key(e: InputEventKey) -> void:
 			_reorder(-1)
 		KEY_F:
 			_fit_camera()
-		KEY_V:
-			_set_tool(Tool.SELECT)
 		KEY_P:
 			_set_tool(Tool.POLYGON)
 		KEY_R:
@@ -1731,7 +1887,19 @@ func _left_release() -> void:
 		_finish_rect()
 	if drag == "move":
 		_do_move(_mw(), true)
-	if drag == "move" or drag == "vertex" or drag == "move_pending" or drag == "vertex_pending":
+	if drag == "marquee":
+		_finish_marquee()
+	elif drag == "marquee_pending":
+		# Plain click (no drag) on a floor / roof area or on empty ground.
+		if _pending_hit.is_empty():
+			if not Input.is_key_pressed(KEY_SHIFT):
+				_select("", -1)
+		elif Input.is_key_pressed(KEY_SHIFT):
+			_toggle_in_selection(_pending_hit[0], _pending_hit[1])
+		else:
+			_select_many(_with_group(_pending_hit[0], _pending_hit[1]))
+		_pending_hit = []
+	if drag == "move" or drag == "vertex" or drag == "move_pending" or drag == "vertex_pending" or drag == "marquee" or drag == "marquee_pending":
 		drag = ""
 
 
@@ -1773,14 +1941,26 @@ func _select_press(pos: Vector2, dbl: bool) -> void:
 				_set_sel_points(np)
 				return
 	var hit := _pick(pos)
-	if hit.is_empty():
-		_select("", -1)
-		return
-	_select(hit[0], hit[1])
-	# A plain click only selects. Moving starts once the mouse has dragged DRAG_START_PX.
-	drag = "move_pending"
 	drag_press_screen = get_viewport().get_mouse_position()
 	drag_origin = pos
+	var shift := Input.is_key_pressed(KEY_SHIFT)
+	# Empty ground, or a floor / roof area that isn't selected yet: dragging draws a selection
+	# box (a plain click still selects the area, or clears the selection on empty ground).
+	if hit.is_empty() or ((hit[0] == "polygon" or hit[0] == "roof") and not _is_selected(hit[0], hit[1])):
+		_pending_hit = hit
+		marquee_start = pos
+		drag = "marquee_pending"
+		return
+	if shift:
+		_toggle_in_selection(hit[0], hit[1])
+		return
+	if not _is_selected(hit[0], hit[1]):
+		_select_many(_with_group(hit[0], hit[1]))  # clicking one member selects its whole group
+	# A plain click only selects. Moving starts once the mouse has dragged DRAG_START_PX.
+	drag = "move_pending"
+	if sel_kind == "multi":
+		drag_multi_orig = _multi_snapshot()
+		return
 	match sel_kind:
 		"polygon", "roof", "wall":
 			drag_orig_points = _sel_points()
@@ -1799,6 +1979,12 @@ func _select_press(pos: Vector2, dbl: bool) -> void:
 ## with `snap` true (on release) the result is aligned to the grid.
 func _do_move(pos: Vector2, snap: bool = false) -> void:
 	var delta := pos - drag_origin
+	if sel_kind == "multi":
+		if snap and _snap_on() and not multi.is_empty():
+			var a := _item_anchor(multi[0][0], drag_multi_orig[0])
+			delta = _snap(a + delta) - a
+		_move_multi(delta)
+		return
 	if snap and _snap_on():
 		match sel_kind:
 			"polygon", "roof", "wall":
@@ -1814,10 +2000,10 @@ func _do_move(pos: Vector2, snap: bool = false) -> void:
 			_set_sel_points(np)
 		"prop":
 			data["props"][sel_idx]["pos"] = drag_orig_pos + delta
-			renderer.rebuild_props()
+			renderer.update_prop(sel_idx)
 		"light":
 			data["lights"][sel_idx]["pos"] = drag_orig_pos + delta
-			renderer.rebuild_lights()
+			renderer.update_light(sel_idx)
 		"opening":
 			# Slides along (and snaps to) the nearest wall; stays where it is dropped if no wall is close.
 			var o: Dictionary = data["openings"][sel_idx]
@@ -1835,7 +2021,7 @@ func _do_move(pos: Vector2, snap: bool = false) -> void:
 				moved.append(p + delta)
 			data["npcs"][sel_idx]["pos"] = drag_orig_pos + delta
 			data["npcs"][sel_idx]["patrol"] = moved
-			renderer.rebuild_npcs()
+			renderer.update_npc(sel_idx)
 
 
 func _path_click(p: Vector2) -> void:
@@ -1910,7 +2096,8 @@ func _place_prop(p: Vector2) -> void:
 	var loot := "none"
 	if MapData.LOOT_PROPS.has(_prop_key()):
 		loot = MapData.NPC_LOOT.keys()[maxi(prop_loot_opt.selected, 0)]
-	data["props"].append(MapData.new_prop(_prop_key(), p, sc, rot, -1, loot))
+	var lock_it := prop_lock_check.button_pressed and (_prop_key() == "crate" or _prop_key() == "trunk")
+	data["props"].append(MapData.new_prop(_prop_key(), p, sc, rot, -1, loot, lock_it))
 	renderer.rebuild_props()
 	_select("prop", data["props"].size() - 1)
 
@@ -1930,23 +2117,399 @@ func _place_npc(p: Vector2) -> void:
 		MapData.NPC_LOOT.keys()[maxi(npc_loot_opt.selected, 0)],
 		MapData.NPC_DISPOSITIONS.keys()[maxi(npc_disp_opt.selected, 0)],
 		PackedVector2Array(), npc_head_opt.selected - 1))
+	var placed: Dictionary = data["npcs"][data["npcs"].size() - 1]
+	placed["hp"] = int(npc_hp_spin.value)
+	placed["bounty"] = npc_bounty_check.button_pressed and placed["disposition"] == "hostile"
 	renderer.rebuild_npcs()
 	_select("npc", data["npcs"].size() - 1)
 
 
-func _delete_selected() -> void:
-	if sel_kind == "" or drawing_patrol:
+const KIND_KEYS := {"polygon": "polygons", "roof": "roofs", "wall": "walls", "prop": "props", "light": "lights", "npc": "npcs", "opening": "openings"}
+
+
+func _copy_selected() -> void:
+	var list := _sel_list()
+	if list.is_empty() or drawing_patrol:
+		return
+	var items: Array = []
+	for e in list:
+		items.append([e[0], data[KIND_KEYS[e[0]]][e[1]].duplicate(true)])
+	clipboard = {"items": items}
+	_paste_count = 0
+	_update_clip_buttons()
+
+
+## Pastes the copied object(s). `at_cursor` (keyboard) centres them on the mouse; the toolbar
+## button (mouse is over the button) drops them one grid step down-right of the original,
+## further each time. Pasted groups become new groups, separate from the originals.
+func _paste(at_cursor: bool) -> void:
+	if clipboard.is_empty():
+		return
+	var items: Array = clipboard["items"]
+	var delta: Vector2
+	if at_cursor:
+		delta = _snap(_mw()) - _items_center(items)
+	else:
+		_paste_count += 1
+		delta = Vector2(GRID, GRID) * _paste_count
+	push_undo()
+	var new_groups := {}  # copied group id -> fresh id
+	var next_id := _next_group_id()
+	var pasted: Array = []
+	var kinds := {}
+	for e in items:
+		var kind: String = e[0]
+		var item := _translated(kind, e[1], delta)
+		var g := int(item.get("group", 0))
+		if items.size() == 1:
+			item.erase("group")  # a lone copy of a group member is just a plain object
+		elif g > 0:
+			if not new_groups.has(g):
+				new_groups[g] = next_id
+				next_id += 1
+			item["group"] = new_groups[g]
+		if kind == "opening" and items.size() == 1:
+			# A lone door / window snaps onto the nearest wall at the new spot, like when dragged.
+			var s := _wall_snap(item["pos"])
+			if not s.is_empty():
+				item["pos"] = s["pos"]
+				item["rot"] = s["rot"]
+				item["thick"] = s["thick"]
+		var key: String = KIND_KEYS[kind]
+		data[key].append(item)
+		pasted.append([kind, data[key].size() - 1])
+		kinds[kind] = true
+	for k in kinds:
+		_rebuild_kind(k)
+	if kinds.has("roof") and roof_toggle != null and not roof_toggle.button_pressed:
+		roof_toggle.button_pressed = true  # show the roof that was just pasted
+	_select_many(pasted)
+
+
+## Copy of `item` moved by `delta` (points, positions and NPC patrol areas).
+func _translated(kind: String, item: Dictionary, delta: Vector2) -> Dictionary:
+	var out := item.duplicate(true)
+	match kind:
+		"polygon", "roof", "wall":
+			out["points"] = _moved(item["points"], delta)
+		"npc":
+			out["pos"] = item["pos"] + delta
+			out["patrol"] = _moved(item["patrol"], delta)
+		_:
+			out["pos"] = item["pos"] + delta
+	return out
+
+
+## Centre of the anchors of [[kind, item], ...].
+func _items_center(items: Array) -> Vector2:
+	if items.is_empty():
+		return Vector2.ZERO
+	var r := Rect2(_item_anchor(items[0][0], items[0][1]), Vector2.ZERO)
+	for e in items:
+		r = r.expand(_item_anchor(e[0], e[1]))
+	return r.get_center()
+
+
+# ------------------------------------------------------------------ multi-selection and groups
+
+## Current selection as [[kind, idx], ...] (one entry for a single selection, none for nothing).
+func _sel_list() -> Array:
+	if sel_kind == "multi":
+		return multi
+	if sel_kind == "" or sel_idx < 0:
+		return []
+	return [[sel_kind, sel_idx]]
+
+
+## Selects several objects. A single ungrouped object becomes a normal single selection
+## (so its settings bar and point handles show).
+func _select_many(list: Array) -> void:
+	if list.is_empty():
+		_select("", -1)
+	elif list.size() == 1:
+		_select(list[0][0], list[0][1])
+	else:
+		multi = list
+		sel_kind = "multi"
+		sel_idx = -1
+		_sync_ui()
+
+
+func _is_selected(kind: String, idx: int) -> bool:
+	for e in _sel_list():
+		if e[0] == kind and e[1] == idx:
+			return true
+	return false
+
+
+## The object plus every other object in its group (just the object when ungrouped).
+func _with_group(kind: String, idx: int) -> Array:
+	var g := int(data[KIND_KEYS[kind]][idx].get("group", 0))
+	if g <= 0:
+		return [[kind, idx]]
+	var out: Array = []
+	for k in KIND_KEYS:
+		var arr: Array = data[KIND_KEYS[k]]
+		for i in arr.size():
+			if int(arr[i].get("group", 0)) == g:
+				out.append([k, i])
+	return out
+
+
+func _next_group_id() -> int:
+	var hi := 0
+	for k in KIND_KEYS:
+		for item in data[KIND_KEYS[k]]:
+			hi = maxi(hi, int(item.get("group", 0)))
+	return hi + 1
+
+
+## Group: the selected objects then select and move together (and copy as one group).
+func _group_selected() -> void:
+	var list := _sel_list()
+	if list.size() < 2:
 		return
 	push_undo()
-	var key := {"polygon": "polygons", "roof": "roofs", "wall": "walls", "prop": "props", "light": "lights", "npc": "npcs", "opening": "openings"}[sel_kind] as String
-	data[key].remove_at(sel_idx)
-	var kind := sel_kind
+	var g := _next_group_id()
+	for e in list:
+		data[KIND_KEYS[e[0]]][e[1]]["group"] = g
+	_sync_ui()
+
+
+func _ungroup_selected() -> void:
+	var list := _sel_list()
+	if not _sel_has_group():
+		return
+	push_undo()
+	for e in list:
+		data[KIND_KEYS[e[0]]][e[1]].erase("group")
+	_sync_ui()
+
+
+## True when the whole selection is exactly one group (so "Group" would change nothing).
+func _sel_is_one_group() -> bool:
+	var list := _sel_list()
+	if list.size() < 2:
+		return false
+	var g := int(data[KIND_KEYS[list[0][0]]][list[0][1]].get("group", 0))
+	if g <= 0:
+		return false
+	for e in list:
+		if int(data[KIND_KEYS[e[0]]][e[1]].get("group", 0)) != g:
+			return false
+	return _with_group(list[0][0], list[0][1]).size() == list.size()
+
+
+func _sel_has_group() -> bool:
+	for e in _sel_list():
+		if int(data[KIND_KEYS[e[0]]][e[1]].get("group", 0)) > 0:
+			return true
+	return false
+
+
+## Every object fully inside `r` (point objects: their position; shapes: all their points).
+## Hidden roofs are skipped.
+func _objects_in_rect(r: Rect2) -> Array:
+	var out: Array = []
+	for k in KIND_KEYS:
+		if k == "roof" and not renderer.roofs_visible:
+			continue
+		var arr: Array = data[KIND_KEYS[k]]
+		for i in arr.size():
+			var item: Dictionary = arr[i]
+			var inside := true
+			if k == "polygon" or k == "roof" or k == "wall":
+				var pts: PackedVector2Array = item["points"]
+				inside = pts.size() > 0
+				for p in pts:
+					if not r.has_point(p):
+						inside = false
+						break
+			else:
+				inside = r.has_point(item["pos"])
+			if inside:
+				out.append([k, i])
+	return out
+
+
+## Selection box finished: select what it encloses, pulling in the rest of any group touched.
+## With Shift held the result is added to the current selection.
+func _finish_marquee() -> void:
+	var r := Rect2(marquee_start, _mw() - marquee_start).abs()
+	var found: Array = _sel_list().duplicate() if Input.is_key_pressed(KEY_SHIFT) else []
+	for e in _objects_in_rect(r):
+		for m in _with_group(e[0], e[1]):
+			if not _list_has(found, m):
+				found.append(m)
+	_select_many(found)
+
+
+func _list_has(list: Array, e: Array) -> bool:
+	for x in list:
+		if x[0] == e[0] and x[1] == e[1]:
+			return true
+	return false
+
+
+## Shift-click: adds the object (with its group) to the selection, or removes it if already in.
+func _toggle_in_selection(kind: String, idx: int) -> void:
+	var list: Array = _sel_list().duplicate()
+	var members := _with_group(kind, idx)
+	if _list_has(list, [kind, idx]):
+		for m in members:
+			for j in range(list.size() - 1, -1, -1):
+				if list[j][0] == m[0] and list[j][1] == m[1]:
+					list.remove_at(j)
+	else:
+		for m in members:
+			if not _list_has(list, m):
+				list.append(m)
+	_select_many(list)
+
+
+## Rotates the selection by `angle` radians (positive = clockwise on screen) around the centre of
+## its bounding box. Outlines and patrol areas turn with it; props and doors / windows also turn
+## their own facing.
+func _rotate_selected(angle: float) -> void:
+	var list := _sel_list()
+	if list.is_empty() or drawing_patrol or drag != "":
+		return
+	var items: Array = []
+	for e in list:
+		items.append([e[0], data[KIND_KEYS[e[0]]][e[1]]])
+	var c := _items_bounds(items).get_center()
+	if list.size() == 1 and (list[0][0] == "prop" or list[0][0] == "opening" or list[0][0] == "light" or list[0][0] == "npc"):
+		c = data[KIND_KEYS[list[0][0]]][list[0][1]]["pos"]  # a single object turns on the spot
+	push_undo("rotate")  # holding Q / E (key repeat) makes one undo step, not dozens
+	for e in list:
+		var key: String = KIND_KEYS[e[0]]
+		data[key][e[1]] = _rotated_item(e[0], data[key][e[1]], c, angle)
+	_refresh_items(list)
+	if sel_kind == "prop":
+		rot_spin.set_value_no_signal(rad_to_deg(float(data["props"][sel_idx]["rot"])))  # keep the Rotate field in step
+	overlay.queue_redraw()
+
+
+## Rotates by ROTATE_STEP_DEG: `dir` -1 = left (anticlockwise), +1 = right (clockwise).
+func _rotate_by_field(dir: float) -> void:
+	_rotate_selected(deg_to_rad(ROTATE_STEP_DEG) * dir)
+
+
+func _rotated_item(kind: String, item: Dictionary, c: Vector2, angle: float) -> Dictionary:
+	var out := item.duplicate(true)
+	match kind:
+		"polygon", "roof", "wall":
+			out["points"] = _rotated_pts(item["points"], c, angle)
+		"npc":
+			out["pos"] = c + (item["pos"] - c).rotated(angle)
+			out["patrol"] = _rotated_pts(item["patrol"], c, angle)
+		"prop", "opening":
+			out["pos"] = c + (item["pos"] - c).rotated(angle)
+			out["rot"] = wrapf(float(item["rot"]) + angle, -PI, PI)
+		_:
+			out["pos"] = c + (item["pos"] - c).rotated(angle)
+	return out
+
+
+func _rotated_pts(pts: PackedVector2Array, c: Vector2, angle: float) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for p in pts:
+		out.append(c + (p - c).rotated(angle))
+	return out
+
+
+## Shows moved / rotated objects ([[kind, idx], ...]). Props, lights, NPCs and floor polygons
+## update just their own node; walls, doors / windows and roofs rebuild their (small) layers once.
+func _refresh_items(list: Array) -> void:
+	var rebuild := {}
+	for e in list:
+		match e[0]:
+			"prop":
+				renderer.update_prop(e[1])
+			"light":
+				renderer.update_light(e[1])
+			"npc":
+				renderer.update_npc(e[1])
+			"polygon":
+				renderer.update_polygon(e[1])
+			_:
+				rebuild[e[0]] = true
+	_rebuild_kinds(rebuild)
+
+
+## Rebuilds the renderer layers for the given kinds ({kind: true}); walls and openings together.
+func _rebuild_kinds(kinds: Dictionary) -> void:
+	if kinds.has("wall") or kinds.has("opening"):
+		renderer.rebuild_openings()  # also rebuilds the walls
+	for k in kinds:
+		if k != "wall" and k != "opening":
+			_rebuild_kind(k)
+
+
+func _multi_snapshot() -> Array:
+	var out: Array = []
+	for e in multi:
+		out.append(data[KIND_KEYS[e[0]]][e[1]].duplicate(true))
+	return out
+
+
+## Moves every object in a multi-selection by `delta` from where the drag started.
+func _move_multi(delta: Vector2) -> void:
+	for i in multi.size():
+		var e: Array = multi[i]
+		data[KIND_KEYS[e[0]]][e[1]] = _translated(e[0], drag_multi_orig[i], delta)
+	_refresh_items(multi)
+
+
+## Reference point of an object: its position, or the centre of its outline.
+func _item_anchor(kind: String, item: Dictionary) -> Vector2:
+	if kind == "polygon" or kind == "roof" or kind == "wall":
+		var pts: PackedVector2Array = item["points"]
+		if pts.is_empty():
+			return Vector2.ZERO
+		var r := Rect2(pts[0], Vector2.ZERO)
+		for p in pts:
+			r = r.expand(p)
+		return r.get_center()
+	return item["pos"]
+
+
+func _moved(pts: PackedVector2Array, delta: Vector2) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for p in pts:
+		out.append(p + delta)
+	return out
+
+
+## Copy is only available with something selected; Paste once something has been copied.
+func _update_clip_buttons() -> void:
+	if copy_btn != null:
+		copy_btn.disabled = _sel_list().is_empty() or drawing_patrol
+		copy_btn.get_child(0).queue_redraw()
+	if paste_btn != null:
+		paste_btn.disabled = clipboard.is_empty()
+		paste_btn.get_child(0).queue_redraw()
+
+
+func _delete_selected() -> void:
+	var list := _sel_list()
+	if list.is_empty() or drawing_patrol:
+		return
+	push_undo()
+	# Remove from the end of each array first so the remaining indices stay valid.
+	var sorted: Array = list.duplicate()
+	sorted.sort_custom(func(a, b) -> bool: return a[1] > b[1])
+	var kinds := {}
+	for e in sorted:
+		data[KIND_KEYS[e[0]]].remove_at(e[1])
+		kinds[e[0]] = true
 	_select("", -1)
-	_rebuild_kind(kind)
+	for k in kinds:
+		_rebuild_kind(k)
 
 
 func _reorder(dir: int) -> void:
-	if sel_kind == "" or sel_kind == "light" or sel_kind == "npc" or sel_kind == "opening":
+	if sel_kind == "" or sel_kind == "multi" or sel_kind == "light" or sel_kind == "npc" or sel_kind == "opening":
 		return
 	var key := {"polygon": "polygons", "roof": "roofs", "wall": "walls", "prop": "props"}[sel_kind] as String
 	var arr: Array = data[key]
@@ -2095,6 +2658,12 @@ func draw_overlay(o: Node2D) -> void:
 		if cur_points.size() >= 3:
 			var near := mouse.distance_to(cur_points[0]) < 14.0 / z
 			o.draw_arc(cur_points[0], 12.0 / z, 0.0, TAU, 20, Color(0.3, 1, 0.4) if near else sel_col, 2.0 / z)
+	if drag == "marquee":
+		# Selection box (not snapped, so it follows the mouse exactly).
+		var mr := Rect2(marquee_start, _mw() - marquee_start).abs()
+		var mc := Color(0.4, 0.85, 1.0)
+		o.draw_rect(mr, Color(mc, 0.12))
+		o.draw_rect(mr, mc, false, 1.5 / z)
 	if rect_active:
 		var r := Rect2(rect_start, mouse - rect_start).abs()
 		o.draw_rect(r, Color(1, 0.85, 0.2, 0.18))
@@ -2134,6 +2703,49 @@ func _handle(o: Node2D, p: Vector2, z: float) -> void:
 
 func _draw_selection(o: Node2D, z: float, lw: float) -> void:
 	var col := Color(1.0, 0.85, 0.2)
+	if sel_kind == "multi":
+		# Outline every selected object (no point handles), plus a dashed box around them all.
+		var keep_kind := sel_kind
+		var items: Array = []
+		for e in multi:
+			sel_kind = e[0]
+			sel_idx = e[1]
+			_draw_selection_outline(o, z, lw)
+			items.append([e[0], data[KIND_KEYS[e[0]]][e[1]]])
+		sel_kind = keep_kind
+		sel_idx = -1
+		var box := _items_bounds(items).grow(10.0 / z)
+		var dash := 6.0 / z
+		var c := PackedVector2Array([box.position, Vector2(box.end.x, box.position.y), box.end, Vector2(box.position.x, box.end.y), box.position])
+		for i in 4:
+			o.draw_dashed_line(c[i], c[i + 1], Color(col, 0.7), 1.5 / z, dash)
+		return
+	_draw_selection_outline(o, z, lw, true)
+
+
+## Bounding box of [[kind, item], ...] (outlines and positions, plus a little for point objects).
+func _items_bounds(items: Array) -> Rect2:
+	var r := Rect2()
+	var first := true
+	for e in items:
+		var pts := PackedVector2Array()
+		if e[0] == "polygon" or e[0] == "roof" or e[0] == "wall":
+			pts = e[1]["points"]
+		else:
+			var at: Vector2 = e[1]["pos"]
+			pts = PackedVector2Array([at - Vector2(12, 12), at + Vector2(12, 12)])
+		for p in pts:
+			if first:
+				r = Rect2(p, Vector2.ZERO)
+				first = false
+			else:
+				r = r.expand(p)
+	return r
+
+
+## Outline of the object in sel_kind / sel_idx; `handles` adds the white point handles.
+func _draw_selection_outline(o: Node2D, z: float, lw: float, handles: bool = false) -> void:
+	var col := Color(1.0, 0.85, 0.2)
 	match sel_kind:
 		"polygon", "roof", "wall":
 			if sel_idx < 0 or sel_idx >= data[{"polygon": "polygons", "roof": "roofs", "wall": "walls"}[sel_kind]].size():
@@ -2144,8 +2756,9 @@ func _draw_selection(o: Node2D, z: float, lw: float) -> void:
 			if _sel_closed():
 				pts.append(pts[0])
 			o.draw_polyline(pts, col, 2.0 / z)
-			for p in _sel_points():
-				_handle(o, p, z)
+			if handles:
+				for p in _sel_points():
+					_handle(o, p, z)
 		"prop":
 			if sel_idx >= data["props"].size():
 				return
@@ -2167,8 +2780,9 @@ func _draw_selection(o: Node2D, z: float, lw: float) -> void:
 			if patrol.size() >= 2:
 				patrol.append(patrol[0])
 				o.draw_polyline(patrol, col, 2.0 / z)
-				for p in n["patrol"]:
-					_handle(o, p, z)
+				if handles:
+					for p in n["patrol"]:
+						_handle(o, p, z)
 		"light":
 			if sel_idx >= data["lights"].size():
 				return

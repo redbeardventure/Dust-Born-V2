@@ -14,6 +14,10 @@ var _npcs := Node2D.new()
 var _openings := Node2D.new()
 var _lights := Node2D.new()
 var _roofs := Node2D.new()
+var _prop_nodes: Array = []    # PropNode per data["props"] entry
+var _prop_lights := {}          # prop index -> its PointLight2D (torches, lanterns...)
+var _light_nodes: Array = []   # PointLight2D per data["lights"] entry
+var _poly_nodes: Array = []    # terrain node per data["polygons"] entry (null if < 3 points)
 var _roof_items: Array = []  # [{node: Node2D, pts: PackedVector2Array, mats: Array[ShaderMaterial], alpha: float}]
 var roofs_visible := true
 var _mod := CanvasModulate.new()
@@ -130,7 +134,9 @@ void fragment() {
 
 
 func _init() -> void:
+	add_to_group("map_renderer")  # the player and NPCs ask it where water is
 	_terrain.name = "Terrain"
+	_terrain.z_index = -4  # leaves room for props tucked behind walls (z -1)
 	_walls.name = "Walls"
 	_props.name = "Props"
 	_npcs.name = "Npcs"
@@ -203,42 +209,122 @@ func rebuild_terrain() -> void:
 	var size: Vector2 = data["size"]
 	var bg := PackedVector2Array([Vector2.ZERO, Vector2(size.x, 0), size, Vector2(0, size.y)])
 	_terrain.add_child(_make_poly(str(data["background"]), bg, true))
+	_poly_nodes.clear()
 	for p in data["polygons"]:
 		var pts: PackedVector2Array = p["points"]
 		if pts.size() >= 3:
-			_terrain.add_child(_make_poly(p["type"], pts))
+			var n := _make_poly(p["type"], pts)
+			_terrain.add_child(n)
+			_poly_nodes.append(n)
+		else:
+			_poly_nodes.append(null)
 	if physics_enabled:
 		_build_water_blockers()
 
 
-## The player may wade only this far (pixels) into water from the shore.
-const WADE_DEPTH := 28.0
+## Water terrain nobody can walk on (player or NPCs). Sewer water is drawn as water but stays walkable.
+const UNWALKABLE_WATER := ["water", "icy_water", "lagoon", "oasis", "ocean", "bog"]
+
+## How far (pixels) the player may wade into water from the shore. 0 = water is not walkable at all.
+const WADE_DEPTH := 0.0
 
 
 ## Solid collision over the deep part of each water polygon (the polygon shrunk by WADE_DEPTH).
 ## Solid terrain drawn later on top (ice, wood bridges, stone...) is cut out so it stays walkable.
 func _build_water_blockers() -> void:
+	_water_areas.clear()
 	var polys: Array = data["polygons"]
 	for i in polys.size():
 		var p: Dictionary = polys[i]
-		if not WATER_TYPES.has(p["type"]) or p["points"].size() < 3:
+		if not UNWALKABLE_WATER.has(p["type"]) or p["points"].size() < 3:
 			continue
-		var pieces: Array = Geometry2D.offset_polygon(p["points"], -WADE_DEPTH, Geometry2D.JOIN_ROUND)
-		for j in range(i + 1, polys.size()):
-			var t: String = polys[j]["type"]
-			var tdef: Dictionary = MapData.TERRAIN.get(t, {})
-			if WATER_TYPES.has(t) or not tdef.get("blocks_scatter", false) or polys[j]["points"].size() < 3:
+		# Always run the outline through offset_polygon: hand-drawn / organic water outlines often
+		# cross themselves, and a self-intersecting CollisionPolygon2D fails to decompose and ends
+		# up with no collision at all. The offset returns clean, simple polygons.
+		var pieces: Array = Geometry2D.offset_polygon(p["points"], -maxf(WADE_DEPTH, 1.0), Geometry2D.JOIN_ROUND)
+		_add_water_body(_cut_ground(pieces, polys, i + 1, true))
+	# Water as the map's background (e.g. an ocean with islands): block the whole map except
+	# the ground polygons drawn on top of it.
+	if UNWALKABLE_WATER.has(str(data["background"])):
+		var size: Vector2 = data["size"]
+		var all := PackedVector2Array([Vector2.ZERO, Vector2(size.x, 0), size, Vector2(0, size.y)])
+		_add_water_body(_cut_ground([all], polys, 0, false))
+
+
+## Removes the walkable terrain drawn from index `from` on from `pieces`, so bridges and the like
+## stay walkable. Any opaque, walkable terrain drawn over the water counts as ground; overlays
+## (shadow, moss, blood: translucent) never do. `solid_only` (water polygons) additionally lets
+## walkable water types like bog count; for map-background water they don't.
+func _cut_ground(pieces: Array, polys: Array, from: int, solid_only: bool) -> Array:
+	for j in range(from, polys.size()):
+		var t: String = polys[j]["type"]
+		var tdef: Dictionary = MapData.TERRAIN.get(t, {})
+		if UNWALKABLE_WATER.has(t) or tdef.is_empty() or polys[j]["points"].size() < 3:
+			continue
+		if (tdef["a"] as Color).a < 0.99:
+			continue  # overlays (moss, blood, shadow) don't make ground
+		if not solid_only and WATER_TYPES.has(t):
+			continue
+		pieces = _subtract_solid(pieces, polys[j]["points"])
+	return pieces
+
+
+## Blocked-water areas as plain polygons, with their bounding boxes: [{pts, box}].
+## Movement checks these directly (see is_water_at), so water blocks walking even if a
+## collision polygon fails to build.
+var _water_areas: Array = []
+
+
+## True when world point `p` is on water nobody can walk on.
+func is_water_at(p: Vector2) -> bool:
+	for w in _water_areas:
+		if (w["box"] as Rect2).has_point(p) and Geometry2D.is_point_in_polygon(p, w["pts"]):
+			return true
+	return false
+
+
+## True when a circle of `radius` at `p` touches blocked water (centre plus 8 points on the rim).
+func circle_in_water(p: Vector2, radius: float) -> bool:
+	if _water_areas.is_empty():
+		return false
+	if is_water_at(p):
+		return true
+	for i in 8:
+		var a := TAU * float(i) / 8.0
+		if is_water_at(p + Vector2(cos(a), sin(a)) * radius):
+			return true
+	return false
+
+
+func _add_water_body(pieces: Array) -> void:
+	for piece in pieces:
+		if piece.size() >= 3:
+			var box := Rect2(piece[0], Vector2.ZERO)
+			for v in piece:
+				box = box.expand(v)
+			_water_areas.append({"pts": piece, "box": box})
+	var body := StaticBody2D.new()
+	body.collision_layer = 2  # layer 2 = water: blocks walking, not projectiles or line of sight
+	for piece in pieces:
+		if piece.size() < 3:
+			continue
+		# Build convex shapes ourselves: CollisionPolygon2D silently ends up with no collision when
+		# its own decomposition fails (common after clipping bridges out of a lake). Fall back to
+		# plain triangles, which always work.
+		var parts: Array = Geometry2D.decompose_polygon_in_convex(piece)
+		if parts.is_empty():
+			var tri := Geometry2D.triangulate_polygon(piece)
+			for k in range(0, tri.size() - 2, 3):
+				parts.append(PackedVector2Array([piece[tri[k]], piece[tri[k + 1]], piece[tri[k + 2]]]))
+		for part in parts:
+			if part.size() < 3:
 				continue
-			pieces = _subtract_solid(pieces, polys[j]["points"])
-		var body := StaticBody2D.new()
-		body.collision_layer = 2  # layer 2 = water: blocks walking, not projectiles or line of sight
-		for piece in pieces:
-			if piece.size() < 3:
-				continue
-			var cp := CollisionPolygon2D.new()
-			cp.polygon = piece
-			body.add_child(cp)
-		_terrain.add_child(body)
+			var shape := ConvexPolygonShape2D.new()
+			shape.points = part
+			var cs := CollisionShape2D.new()
+			cs.shape = shape
+			body.add_child(cs)
+	_terrain.add_child(body)
 
 
 static func _signed_area(pts: PackedVector2Array) -> float:
@@ -254,7 +340,15 @@ static func _subtract_solid(pieces: Array, sub: PackedVector2Array) -> Array:
 	var out: Array = []
 	for piece in pieces:
 		var res: Array = Geometry2D.clip_polygons(piece, sub)
-		var ref := signf(_signed_area(piece))
+		# Outer shapes and holes come back with opposite windings, but not necessarily the input's
+		# winding. The largest result is always an outer shape, so take the outer winding from it.
+		var ref := 0.0
+		var biggest := 0.0
+		for r in res:
+			var ar := _signed_area(r)
+			if absf(ar) > biggest:
+				biggest = absf(ar)
+				ref = signf(ar)
 		var outers: Array = []
 		var holes: Array = []
 		for r in res:
@@ -275,8 +369,9 @@ static func _subtract_solid(pieces: Array, sub: PackedVector2Array) -> Array:
 			var split: Array = []
 			for o in outers:
 				for half in [left, right]:
+					# Halves of a solid shape have no holes, so every part is kept.
 					for part in Geometry2D.intersect_polygons(o, half):
-						if signf(_signed_area(part)) == ref:
+						if absf(_signed_area(part)) > 0.5:
 							split.append_array(Geometry2D.clip_polygons(part, h))
 			outers = split
 		out.append_array(outers)
@@ -312,11 +407,30 @@ func _add_depth_rings(holder: Node2D, pts: PackedVector2Array) -> void:
 			holder.add_child(ring)
 
 
+## Wood plank floors: the boards run parallel to the room's shortest walls. The room's long axis
+## comes from the polygon's tightest bounding rectangle, so
+## rooms whose walls don't quite match still get the best-fit direction. Other terrain is unchanged.
+static func _plank_uv(type: String, pts: PackedVector2Array) -> PackedVector2Array:
+	var def: Dictionary = MapData.TERRAIN.get(type, {})
+	if not def.has("plank_w") or pts.size() < 3:
+		return pts
+	var across := _long_axis(pts)  # the long side; boards run at right angles to it
+	var along := Vector2(-across.y, across.x)  # the short side's direction: where the boards point
+	var uv := PackedVector2Array()
+	for p in pts:
+		# The texture's boards run down its y axis when "vertical", along x otherwise.
+		if bool(def.get("vertical", false)):
+			uv.append(Vector2(p.dot(across), p.dot(along)))
+		else:
+			uv.append(Vector2(p.dot(along), p.dot(across)))
+	return uv
+
+
 func _make_poly(type: String, pts: PackedVector2Array, is_background := false) -> Node2D:
 	var holder := Node2D.new()
 	var poly := Polygon2D.new()
 	poly.polygon = pts
-	poly.uv = pts
+	poly.uv = _plank_uv(type, pts) if not is_background else pts
 	poly.texture = MapData.get_texture(type)
 	poly.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 	if WATER_TYPES.has(type):
@@ -409,6 +523,55 @@ func _edge_line(pts: PackedVector2Array, width: float, col: Color) -> Line2D:
 # ---------------------------------------------------------------- walls
 
 func rebuild_walls() -> void:
+	_build_walls()
+	_restack_props()  # which props sit behind a wall depends on where the walls are
+
+
+## Props that sit north of a wall they overlap are tucked under it (draw order -1), while props
+## south of the wall, or clear of it, draw over it. Terrain sits at -4, so these stay above the ground.
+const BEHIND_Z := -1
+
+
+func _restack_props() -> void:
+	for i in _prop_nodes.size():
+		_restack_prop(_prop_nodes[i])
+
+
+func _restack_prop(node: PropNode) -> void:
+	if not is_instance_valid(node) or node.z_index >= 10:
+		return  # canopies keep their own draw order
+	node.z_index = BEHIND_Z if _behind_wall(node) else 0
+
+
+func _behind_wall(node: PropNode) -> bool:
+	var def: Dictionary = MapData.PROPS.get(node.kind, MapData.PROPS["tree"])
+	var r := float(def["radius"]) * node.scale.x
+	for w in data["walls"]:
+		if str(w.get("style", "wall")) == "rail":
+			continue
+		var pts: PackedVector2Array = w["points"]
+		if pts.size() < 2:
+			continue
+		var near := _nearest_on_path(node.position, pts, bool(w["closed"]))
+		if near.distance_to(node.position) < r + float(w["width"]) * 0.5 and near.y - node.position.y > 2.0:
+			return true  # touching the wall, and the wall is further down the screen (in front)
+	return false
+
+
+static func _nearest_on_path(p: Vector2, pts: PackedVector2Array, closed: bool) -> Vector2:
+	var best := pts[0]
+	var best_d := INF
+	var n := pts.size()
+	for i in (n if closed else n - 1):
+		var c := Geometry2D.get_closest_point_to_segment(p, pts[i], pts[(i + 1) % n])
+		var d := c.distance_to(p)
+		if d < best_d:
+			best_d = d
+			best = c
+	return best
+
+
+func _build_walls() -> void:
 	_clear(_walls)
 	var openings: Array = data.get("openings", [])
 	for w in data["walls"]:
@@ -550,21 +713,10 @@ func _wall_line(pts: PackedVector2Array, closed: bool, width: float, col: Color,
 func rebuild_props() -> void:
 	_clear(_props)
 	_canopies.clear()
+	_prop_nodes.clear()
 	for pr in data["props"]:
 		var def: Dictionary = MapData.PROPS.get(pr["type"], MapData.PROPS["tree"])
 		var sc: float = pr["scale"]
-		var is_horse := MapData.HORSE_PROPS.has(pr["type"])
-		if physics_enabled and (is_horse or MapData.COW_PROPS.has(pr["type"])):
-			# Play-test: a live animal that wanders; horses can also be ridden (the editor shows a still prop).
-			var horse := HorseNode.new()
-			horse.rideable = is_horse
-			horse.kind = pr["type"]
-			horse.seed_v = pr["seed"]
-			horse.size_scale = sc
-			horse.heading = pr["rot"]
-			horse.position = pr["pos"]
-			_props.add_child(horse)
-			continue
 		var node := PropNode.new()
 		node.kind = pr["type"]
 		node.seed_v = pr["seed"]
@@ -572,12 +724,13 @@ func rebuild_props() -> void:
 		node.rotation = pr["rot"]
 		node.scale = Vector2(sc, sc)
 		if physics_enabled and MapData.LOOT_PROPS.has(pr["type"]):
-			node.make_interactive(str(pr.get("loot", "none")))  # selectable; barrels can be shot
+			node.make_interactive(str(pr.get("loot", "none")), bool(pr.get("locked", false)))  # selectable; barrels can be shot
 		if def.get("fade", false):
 			# Canopies and smoke draw above the player and fade when covering them.
 			node.z_index = 10
 			_canopies.append(node)
 		_props.add_child(node)
+		_prop_nodes.append(node)
 		var solid: float = def["solid"]
 		var rect: Vector2 = def.get("rect", Vector2.ZERO)
 		var occ_pts := PackedVector2Array()
@@ -589,11 +742,12 @@ func rebuild_props() -> void:
 				var a := TAU * float(i) / 8.0
 				occ_pts.append(Vector2(cos(a), sin(a)) * solid * 0.9)
 		if occ_pts.size() > 0:
-			var occ := OccluderPolygon2D.new()
-			occ.polygon = occ_pts
-			var lo := LightOccluder2D.new()
-			lo.occluder = occ
-			node.add_child(lo)
+			if not def.get("no_shadow", false):  # low props (stumps) don't block light
+				var occ := OccluderPolygon2D.new()
+				occ.polygon = occ_pts
+				var lo := LightOccluder2D.new()
+				lo.occluder = occ
+				node.add_child(lo)
 			if physics_enabled:
 				var body := StaticBody2D.new()
 				var cs := CollisionShape2D.new()
@@ -607,6 +761,7 @@ func rebuild_props() -> void:
 					cs.shape = circ
 				body.add_child(cs)
 				node.add_child(body)
+	_restack_props()
 	rebuild_lights()
 
 
@@ -655,6 +810,9 @@ func rebuild_npcs() -> void:
 		node.loot = str(n.get("loot", "none"))
 		node.patrol = n["patrol"]
 		node.head = int(n.get("head", -1))
+		node.bounty = bool(n.get("bounty", false))
+		node.max_hp = maxi(int(n.get("hp", NpcNode.MAX_HP)), 1)
+		node.hp = node.max_hp
 		node.animate = physics_enabled
 		node.position = n["pos"]
 		_npcs.add_child(node)
@@ -665,15 +823,84 @@ func rebuild_npcs() -> void:
 func rebuild_lights() -> void:
 	_clear(_lights)
 	_flicker.clear()
+	_light_nodes.clear()
+	_prop_lights.clear()
 	for l in data["lights"]:
-		_add_light(l["pos"], l["radius"], l["color"], l["energy"], l["flicker"])
-	for pr in data["props"]:
+		_light_nodes.append(_add_light(l["pos"], l["radius"], l["color"], l["energy"], l["flicker"]))
+	var props: Array = data["props"]
+	for i in props.size():
+		var pr: Dictionary = props[i]
 		var lt: Dictionary = MapData.PROPS.get(pr["type"], {}).get("light", {})
 		if not lt.is_empty():
-			_add_light(pr["pos"], float(lt["r"]) * float(pr["scale"]), lt["c"], float(lt["e"]), true)
+			_prop_lights[i] = _add_light(pr["pos"], float(lt["r"]) * float(pr["scale"]), lt["c"], float(lt["e"]), true)
 
 
-func _add_light(pos: Vector2, radius: float, color: Color, energy: float, flicker: bool) -> void:
+# ---------------------------------------------------------------- quick updates (editor)
+# Moving or rotating objects only changes positions, so these update the existing nodes
+# instead of rebuilding a whole layer (which redraws every prop / polygon on the map).
+# Each falls back to a full rebuild if the node lists are out of step with the data.
+
+func update_prop(i: int) -> void:
+	if i < 0 or i >= _prop_nodes.size() or _prop_nodes.size() != data["props"].size():
+		rebuild_props()
+		return
+	var pr: Dictionary = data["props"][i]
+	var node: PropNode = _prop_nodes[i]
+	var sc: float = pr["scale"]
+	node.position = pr["pos"]
+	node.rotation = pr["rot"]
+	node.scale = Vector2(sc, sc)
+	_restack_prop(node)
+	node.queue_redraw()  # the shadow direction depends on the rotation
+	if _prop_lights.has(i):
+		var l: PointLight2D = _prop_lights[i]
+		l.position = pr["pos"]
+		var lt: Dictionary = MapData.PROPS.get(pr["type"], {}).get("light", {})
+		if not lt.is_empty():
+			l.texture_scale = float(lt["r"]) * sc / 128.0
+
+
+func update_light(i: int) -> void:
+	if i < 0 or i >= _light_nodes.size() or _light_nodes.size() != data["lights"].size():
+		rebuild_lights()
+		return
+	var l: PointLight2D = _light_nodes[i]
+	l.position = data["lights"][i]["pos"]
+
+
+func update_npc(i: int) -> void:
+	if i < 0 or i >= _npcs.get_child_count() or _npcs.get_child_count() != data["npcs"].size():
+		rebuild_npcs()
+		return
+	var node: NpcNode = _npcs.get_child(i) as NpcNode
+	if node == null or node.is_queued_for_deletion():
+		rebuild_npcs()
+		return
+	node.position = data["npcs"][i]["pos"]
+	node.patrol = data["npcs"][i]["patrol"]
+	node.queue_redraw()
+
+
+## Replaces just one terrain polygon's node (editor only; play-test water collision needs the full build).
+func update_polygon(i: int) -> void:
+	if physics_enabled or i < 0 or i >= _poly_nodes.size() or _poly_nodes.size() != data["polygons"].size():
+		rebuild_terrain()
+		return
+	var p: Dictionary = data["polygons"][i]
+	var pts: PackedVector2Array = p["points"]
+	var old: Node2D = _poly_nodes[i]
+	if old == null or pts.size() < 3:
+		rebuild_terrain()
+		return
+	var n := _make_poly(p["type"], pts)
+	_terrain.add_child(n)
+	_terrain.move_child(n, old.get_index())
+	_terrain.remove_child(old)
+	old.queue_free()
+	_poly_nodes[i] = n
+
+
+func _add_light(pos: Vector2, radius: float, color: Color, energy: float, flicker: bool) -> PointLight2D:
 	var l := PointLight2D.new()
 	l.texture = light_texture()
 	l.texture_scale = radius / 128.0
@@ -686,6 +913,7 @@ func _add_light(pos: Vector2, radius: float, color: Color, energy: float, flicke
 	_lights.add_child(l)
 	if flicker:
 		_flicker.append([l, energy, randf() * TAU])
+	return l
 
 
 # ---------------------------------------------------------------- roofs
@@ -777,6 +1005,9 @@ uniform vec2 seg_b[64];
 uniform float orient = 1.0;
 uniform float max_d = 40.0;
 uniform float round_roof = 0.0;
+uniform vec2 long_axis = vec2(1.0, 0.0);  // unit vector along the roof's longer side (round roofs)
+uniform vec2 axis_range = vec2(0.0, 1.0); // roof extent along long_axis
+uniform float rib_count = 0.0;            // evenly spaced support ribs across the roof (2 = at 1/3 and 2/3)
 uniform vec2 light_dir = vec2(-0.55, -0.83);
 
 varying vec2 wpos;
@@ -829,6 +1060,11 @@ void fragment() {
 		}
 	}
 	vec2 q = vec2(dot(wpos, t1), dot(wpos, n1));
+	if (round_roof > 0.5) {
+		// Curved roofs (wagon canvas, train cars): the ribs / boards always run across the roof,
+		// parallel to its shorter side, whichever edge is nearest (also round the curved ends).
+		q = vec2(dot(wpos, long_axis), dot(wpos, vec2(-long_axis.y, long_axis.x)));
+	}
 	vec4 tex = texture(TEXTURE, q * TEXTURE_PIXEL_SIZE);
 	float lit = dot(n1, normalize(light_dir));
 	vec3 col;
@@ -837,6 +1073,19 @@ void fragment() {
 		float tilt = 1.0 - clamp(d1 / max_d, 0.0, 1.0);
 		col = tex.rgb * (1.0 + 0.45 * lit * tilt);
 		col *= mix(0.78, 1.0, smoothstep(0.0, max_d, d1));
+		if (rib_count > 0.5) {
+			// Support hoops: shaded lines across the roof (parallel to the short side) at 1/3, 2/3...
+			float len = max(axis_range.y - axis_range.x, 1.0);
+			float t = (dot(wpos, long_axis) - axis_range.x) / len;
+			for (int k = 1; k <= 6; k++) {
+				if (float(k) > rib_count) {
+					break;
+				}
+				float dd = abs(t - float(k) / (rib_count + 1.0)) * len;
+				col *= 1.0 - 0.18 * (1.0 - smoothstep(1.5, 5.0, dd));  // soft shade either side
+				col *= 1.0 - 0.32 * (1.0 - smoothstep(0.8, 1.8, dd));  // the line itself
+			}
+		}
 	} else {
 		col = tex.rgb * (1.0 + 0.34 * lit);
 		float ridge = 1.0 - smoothstep(0.0, 2.2, d2 - d1);
@@ -849,7 +1098,7 @@ void fragment() {
 	return _roof_shaded_shader
 
 
-func _roof_shaded_material(pts: PackedVector2Array, round_roof: bool) -> ShaderMaterial:
+func _roof_shaded_material(pts: PackedVector2Array, round_roof: bool, ribs: int = 0) -> ShaderMaterial:
 	var m := ShaderMaterial.new()
 	m.shader = roof_shaded_shader()
 	var n := pts.size()
@@ -881,7 +1130,41 @@ func _roof_shaded_material(pts: PackedVector2Array, round_roof: bool) -> ShaderM
 	m.set_shader_parameter("orient", 1.0 if area >= 0.0 else -1.0)
 	m.set_shader_parameter("max_d", best)
 	m.set_shader_parameter("round_roof", 1.0 if round_roof else 0.0)
+	var axis := _long_axis(pts)
+	var lo := INF
+	var hi := -INF
+	for p in pts:
+		lo = minf(lo, p.dot(axis))
+		hi = maxf(hi, p.dot(axis))
+	m.set_shader_parameter("long_axis", axis)
+	m.set_shader_parameter("axis_range", Vector2(lo, hi))
+	m.set_shader_parameter("rib_count", float(ribs))
 	return m
+
+
+## Direction of the roof's longer side: the smallest bounding rectangle aligned to one of the
+## outline's edges is found, and its longer dimension is returned as a unit vector.
+static func _long_axis(pts: PackedVector2Array) -> Vector2:
+	var best_area := INF
+	var axis := Vector2.RIGHT
+	for i in pts.size():
+		var d := pts[(i + 1) % pts.size()] - pts[i]
+		if d.length() < 0.001:
+			continue
+		d = d.normalized()
+		var perp := Vector2(-d.y, d.x)
+		var lo := Vector2(INF, INF)
+		var hi := Vector2(-INF, -INF)
+		for p in pts:
+			var u := Vector2(p.dot(d), p.dot(perp))
+			lo = Vector2(minf(lo.x, u.x), minf(lo.y, u.y))
+			hi = Vector2(maxf(hi.x, u.x), maxf(hi.y, u.y))
+		var w := hi.x - lo.x
+		var h := hi.y - lo.y
+		if w * h < best_area - 0.01:
+			best_area = w * h
+			axis = d if w >= h else perp
+	return axis
 
 
 func rebuild_roofs() -> void:
@@ -912,7 +1195,7 @@ func rebuild_roofs() -> void:
 		poly.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 		var shape := str(def.get("shape", "hip"))
 		# "flat" = plain texture, no pitch shading or ridge lines (e.g. wagon canvas).
-		var pm := _roof_material() if shape == "flat" else _roof_shaded_material(pts, shape == "round")
+		var pm := _roof_material() if shape == "flat" else _roof_shaded_material(pts, shape == "round", int(def.get("ribs", 0)))
 		poly.material = pm
 		mats.append(pm)
 		holder.add_child(poly)
@@ -937,49 +1220,63 @@ func set_roofs_visible(on: bool) -> void:
 	_roofs.visible = on
 
 
-## Play-test: hides a roof while the player is under it, and otherwise cuts a view cone
-## through every window / open door on that roof so the inside can be seen from outside.
+## Play-test: the whole roof lifts (fades out) when
+##  - one of its doors has been opened (it then stays off, even if the door is shut again),
+##  - the player is near one of its windows (comes back when they walk away),
+##  - the player is inside it. A roof with no doors then stays off for good, like an opened door.
 func update_roof_fade(pos: Vector2, delta: float) -> void:
 	if _roof_items.is_empty():
 		return
-	var doors: Array = []
-	for n in _openings.get_children():
-		var op := n as OpeningNode
-		if op != null and (op.kind == "window" or op.is_open):
-			doors.append(op)
 	for item in _roof_items:
 		var pts: PackedVector2Array = item["pts"]
+		if not item.has("doors"):
+			_link_roof_openings(item)
 		var inside := Geometry2D.is_point_in_polygon(pos, pts)
-		var a: float = move_toward(float(item["alpha"]), 0.0 if inside else 1.0, delta * 4.0)
+		var covered := true
+		if inside and item["doors"].is_empty():
+			item["opened"] = true  # no door to open: entering uncovers it for good
+		if inside or item["opened"]:
+			covered = false
+		else:
+			for d in item["doors"]:
+				if is_instance_valid(d) and d.is_open:
+					item["opened"] = true  # an opened door uncovers the building for good
+					covered = false
+					break
+			if covered:
+				for w in item["windows"]:
+					if is_instance_valid(w) and w.position.distance_to(pos) < WINDOW_REVEAL_DIST:
+						covered = false  # looking in through a window
+						break
+		var a: float = move_toward(float(item["alpha"]), 1.0 if covered else 0.0, delta * 4.0)
 		item["alpha"] = a
 		var node: Node2D = item["node"]
 		node.modulate.a = a
 		node.visible = a > 0.01
-		var ea := PackedVector2Array()
-		var eb := PackedVector2Array()
-		if not inside:
-			for op in doors:
-				if ea.size() >= MAX_VIEW_CONES:
-					break
-				if op.position.distance_to(pos) > MAX_VIEW_DIST:
-					continue
-				if not (Geometry2D.is_point_in_polygon(op.position, pts) or MapData.dist_to_path(op.position, pts, true) < 24.0):
-					continue
-				ea.append(op.to_global(Vector2(-op.width * 0.5, 0.0)))
-				eb.append(op.to_global(Vector2(op.width * 0.5, 0.0)))
-		while ea.size() < MAX_VIEW_CONES:
-			ea.append(Vector2.ZERO)
-			eb.append(Vector2.ZERO)
-		var count := 0
-		if not inside:
-			for k in MAX_VIEW_CONES:
-				if ea[k] != eb[k]:
-					count += 1
-		for m in item["mats"]:
-			m.set_shader_parameter("viewer", pos)
-			m.set_shader_parameter("cone_count", count)
-			m.set_shader_parameter("edge_a", ea)
-			m.set_shader_parameter("edge_b", eb)
+
+
+## How close (px) the player must be to a window for its building's roof to lift.
+const WINDOW_REVEAL_DIST := 90.0
+
+
+## Finds the doors and windows set into (or inside) a roof's outline, once per roof.
+func _link_roof_openings(item: Dictionary) -> void:
+	var pts: PackedVector2Array = item["pts"]
+	var doors: Array = []
+	var windows: Array = []
+	for n in _openings.get_children():
+		var op := n as OpeningNode
+		if op == null:
+			continue
+		if not (Geometry2D.is_point_in_polygon(op.position, pts) or MapData.dist_to_path(op.position, pts, true) < 24.0):
+			continue
+		if op.kind == "door":
+			doors.append(op)
+		else:
+			windows.append(op)
+	item["doors"] = doors
+	item["windows"] = windows
+	item["opened"] = false
 
 
 ## Fades tree canopies that cover `pos` so the player stays visible underneath.

@@ -41,10 +41,14 @@ func _process(delta: float) -> void:
 		_collected += delta
 		if _collected >= COLLECT_TIME:
 			queue_free()
-	elif kind == "gold":
+	elif kind == "gold" or kind == "key":
 		var p := get_tree().get_first_node_in_group("player") as Node2D
-		if p != null and p.has_method("add_gold") and p.global_position.distance_to(global_position) < PICKUP_RANGE:
-			p.call("add_gold", amount)
+		var method := "add_gold" if kind == "gold" else "add_key"
+		if p != null and p.has_method(method) and p.global_position.distance_to(global_position) < PICKUP_RANGE:
+			if kind == "gold":
+				p.call("add_gold", amount)
+			else:
+				p.call("add_key")
 			_collected = 0.0
 			remove_from_group("loot")
 			for ch in get_children():
@@ -60,6 +64,9 @@ func _draw() -> void:
 		var a := 1.0 - k
 		var up := Vector2(0, -10.0 - 22.0 * k)
 		var font := ThemeDB.fallback_font
+		if kind == "key":
+			draw_string(font, up + Vector2(-60, 0), "Key", HORIZONTAL_ALIGNMENT_CENTER, 120, 15, Color(1.0, 0.86, 0.3, a))
+			return
 		draw_string(font, up + Vector2(-60, 0), "+%d" % amount, HORIZONTAL_ALIGNMENT_CENTER, 120, 15, Color(1.0, 0.86, 0.3, a))
 		draw_circle(up + Vector2(-18, -5), 4.0 * a, Color(0.91, 0.72, 0.19, a))
 		return
@@ -98,11 +105,9 @@ static func draw_icon(ci: CanvasItem, loot_kind: String, c: Vector2, s: float) -
 			ci.draw_rect(Rect2(c + Vector2(-2.5, -4) * s, Vector2(5, 8) * s), Color("c88a40"))
 			for x in [-2.5, 0.5, 3.5]:
 				ci.draw_line(c + Vector2(x - 1, -2) * s, c + Vector2(x + 1, 2) * s, Color("8a5a22"), 1.0 * s)
-		"ammo":  # three cartridges
-			for i in 3:
-				var x := -4.0 + i * 4.0
-				ci.draw_rect(Rect2(c + Vector2(x - 1.3, -2) * s, Vector2(2.6, 7) * s), Color("c8a040"))
-				ci.draw_circle(c + Vector2(x, -2.5) * s, 1.3 * s, Color("8a7a70"))
+		"water":  # water drop
+			ci.draw_colored_polygon(PackedVector2Array([c + Vector2(0, -7) * s, c + Vector2(4.5, 0) * s, c + Vector2(4, 3) * s, c + Vector2(0, 6) * s, c + Vector2(-4, 3) * s, c + Vector2(-4.5, 0) * s]), Color("4aa8d8"))
+			ci.draw_circle(c + Vector2(-1.5, 1.5) * s, 1.2 * s, Color(1, 1, 1, 0.6))
 		"gems":  # cut gem
 			var g := PackedVector2Array([c + Vector2(-5, -1) * s, c + Vector2(-2.5, -5) * s, c + Vector2(2.5, -5) * s, c + Vector2(5, -1) * s, c + Vector2(0, 6) * s])
 			ci.draw_colored_polygon(g, Color("40c8d8"))
@@ -118,10 +123,31 @@ static func draw_icon(ci: CanvasItem, loot_kind: String, c: Vector2, s: float) -
 			ci.draw_circle(c + Vector2(-5, 0) * s, 3.5 * s, Color("d4c690"))
 			ci.draw_circle(c + Vector2(5, 0) * s, 3.5 * s, Color("d4c690"))
 			ci.draw_circle(c + Vector2(0, 0) * s, 1.8 * s, Color("b03030"))
-		"weapon":  # crossed sword
-			ci.draw_line(c + Vector2(-5, 5) * s, c + Vector2(5, -5) * s, Color("d0d4d8"), 2.0 * s)
-			ci.draw_line(c + Vector2(-5, 1) * s, c + Vector2(-1, 5) * s, Color("8a6034"), 2.0 * s)
-			ci.draw_line(c + Vector2(-6, 6) * s, c + Vector2(-4, 4) * s, Color("8a6034"), 2.5 * s)
+		"dagger":  # short blade
+			ci.draw_line(c + Vector2(-3, 3) * s, c + Vector2(4, -4) * s, Color("d0d4d8"), 2.0 * s)
+			ci.draw_line(c + Vector2(-5, 5) * s, c + Vector2(-3, 3) * s, Color("8a6034"), 2.5 * s)
+			ci.draw_line(c + Vector2(-4.5, 1.5) * s, c + Vector2(-1.5, 4.5) * s, Color("c8a040"), 1.5 * s)
+		"sword":  # long blade with crossguard
+			ci.draw_line(c + Vector2(-2, 2) * s, c + Vector2(6, -6) * s, Color("d0d4d8"), 2.2 * s)
+			ci.draw_line(c + Vector2(-6, 6) * s, c + Vector2(-2, 2) * s, Color("8a6034"), 2.5 * s)
+			ci.draw_line(c + Vector2(-5, -0.5) * s, c + Vector2(0.5, 5) * s, Color("c8a040"), 1.8 * s)
+		"axe":  # haft with a wedge head
+			ci.draw_line(c + Vector2(-5, 6) * s, c + Vector2(4, -5) * s, Color("8a6034"), 2.0 * s)
+			ci.draw_colored_polygon(PackedVector2Array([c + Vector2(1, -7) * s, c + Vector2(7, -3) * s, c + Vector2(2, -1) * s]), Color("b8bec4"))
+		"spear":  # long shaft, pointed tip
+			ci.draw_line(c + Vector2(-6, 6) * s, c + Vector2(3, -3) * s, Color("8a6034"), 1.8 * s)
+			ci.draw_colored_polygon(PackedVector2Array([c + Vector2(1, -2) * s, c + Vector2(7, -7) * s, c + Vector2(5, -1) * s]), Color("d0d4d8"))
+		"pistol":  # short gun with grip
+			ci.draw_rect(Rect2(c + Vector2(-5, -3) * s, Vector2(10, 3.5) * s), Color("4a4e55"))
+			ci.draw_rect(Rect2(c + Vector2(-5, -0.5) * s, Vector2(3.5, 6) * s), Color("6a4a2a"))
+		"shotgun":  # long double barrel with wooden stock
+			ci.draw_line(c + Vector2(-1, -2) * s, c + Vector2(7, -2) * s, Color("4a4e55"), 1.6 * s)
+			ci.draw_line(c + Vector2(-1, 0.5) * s, c + Vector2(7, 0.5) * s, Color("4a4e55"), 1.6 * s)
+			ci.draw_colored_polygon(PackedVector2Array([c + Vector2(-7, 1) * s, c + Vector2(-1, -3) * s, c + Vector2(-1, 2) * s, c + Vector2(-5, 4) * s]), Color("8a5a2a"))
+		"rifle":  # long single barrel, stock and scope
+			ci.draw_line(c + Vector2(-2, -1) * s, c + Vector2(8, -1) * s, Color("4a4e55"), 1.4 * s)
+			ci.draw_colored_polygon(PackedVector2Array([c + Vector2(-8, 1) * s, c + Vector2(-2, -2.5) * s, c + Vector2(-2, 1.5) * s, c + Vector2(-6, 4) * s]), Color("8a5a2a"))
+			ci.draw_line(c + Vector2(1, -3) * s, c + Vector2(4, -3) * s, Color("2a2c33"), 1.4 * s)
 		_:  # unknown kind: plain sack
 			ci.draw_circle(c + Vector2(0, 1) * s, 5.5 * s, Color("9a7a4a"))
 			ci.draw_line(c + Vector2(-2, -4) * s, c + Vector2(2, -4) * s, Color("5a4428"), 1.5 * s)

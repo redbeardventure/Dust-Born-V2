@@ -11,25 +11,66 @@ var reload_bar: ProgressBar
 var target_label: Label
 var interact_label: Label
 var message_label: Label
-var ride_btn: Button
 var shoot_btn: Button
+var weapon_btn: Button
+var weapon_icon: Control
+var _wheel_layer: CanvasLayer
+var untarget_btn: Button
+var combat: Combat
+var combat_panel: PanelContainer
+var combat_title: Label
+var combat_list: VBoxContainer
+var combat_status: Label
+var end_turn_btn: Button
+var _hp_refresh := 0.0
+var _bounty_total := 0     # bounty NPCs on the map when play-test started
+var _saw_hostile := false  # (maps without bounties) a hostile NPC has been alive at some point
+var _game_over := false
+const COMBAT_FONT := 10  # font size in the compact combat box
+
+## Special-action cards dealt along the bottom of the screen during combat (one per turn).
+## Effects are in Player.play_card().
+const COMBAT_CARDS := [
+	{"kind": "dash", "title": "Dash", "desc": "Double your movement this turn.", "accent": Color(0.25, 0.55, 0.9)},
+	{"kind": "aim", "title": "Aimed Shot", "desc": "This turn's shot flies dead straight, hits 50% harder and reaches 50% further.", "accent": Color(0.8, 0.25, 0.2)},
+	{"kind": "reload", "title": "Quick Reload", "desc": "Refill your gun without using your action.", "accent": Color(0.8, 0.6, 0.15)},
+]
+const CARD_GAP := 12.0
+var card_row: Control
+var cards: Array = []  # ActionCard nodes
+var _last_card := ""  # kind of the card played this turn (for its USED stamp)
 var ammo_icons: Control
+const AMMO_SCALE := 2.0  # how much bigger the ammo graphic is drawn than its 22 px design
 var door_buttons := {}  # "Open" / "Kick" / "Close" -> Button
 var _msg_time := 0.0
 
 
 func _process(delta: float) -> void:
-	if ride_btn != null:
-		ride_btn.visible = player.mount != null or player.nearest_horse() != null
-		ride_btn.text = "Dismount" if player.mount != null else "Ride"
+	_check_game_over()
 	renderer.update_canopy_fade(player.position, delta)
 	renderer.update_roof_fade(player.position, delta)
 	_update_ammo()
+	_update_combat_status()
+	_update_combat_cards()
+	if untarget_btn != null:
+		untarget_btn.disabled = not (is_instance_valid(player.target) or is_instance_valid(player.interact))
+	if weapon_icon != null:
+		weapon_icon.queue_redraw()  # follows the equipped weapon
+		weapon_btn.tooltip_text = "%s\nClick to change weapon" % Weapons.tooltip(Player.weapon)
 	if shoot_btn != null:
-		var can_shoot := is_instance_valid(player.target) and Weapons.is_ranged(Player.weapon)
+		var my_go := not player.turn_mode or (player.my_turn and player.action_left)
+		var fists := Player.weapon == "none"
+		var armed := fists or Weapons.is_ranged(Player.weapon)
+		var can_shoot := is_instance_valid(player.target) and armed and my_go
+		if fists and can_shoot and player.turn_mode and not player.in_punch_reach(player.target):
+			can_shoot = false  # in combat a punch needs the target right next to you
+		shoot_btn.text = "Punch" if fists else "Shoot"
 		shoot_btn.disabled = not can_shoot
-		shoot_btn.tooltip_text = "Shoot at the target (hold to keep firing)" if can_shoot else (
-				"Pick a gun first" if not Weapons.is_ranged(Player.weapon) else "Target an NPC, barrel or crate first")
+		var verb := "Punch" if fists else "Shoot at"
+		shoot_btn.tooltip_text = ("%s the target (hold to keep going)" % verb) if can_shoot else (
+				"Wait for your turn" if not my_go else
+				"Target an NPC, barrel or crate first" if not is_instance_valid(player.target) else
+				"Move next to the target to punch" if fists else "Pick a gun first")
 		if not can_shoot:
 			player.fire_held = false  # a disabled button never sends button_up
 	if _msg_time > 0.0:
@@ -94,7 +135,7 @@ func _update_ammo() -> void:
 		else:
 			target_label.text = "Target: %s   HP %d / %d%s" % [pn.label(), pn.hp, pn.max_hp(), state]
 	elif is_instance_valid(t):
-		target_label.text = "Target: %s   HP %d / %d" % [t.get("npc_name"), t.get("hp"), NpcNode.MAX_HP]
+		target_label.text = "Target: %s   HP %d / %d" % [t.get("npc_name"), t.get("hp"), t.get("max_hp")]
 	else:
 		target_label.text = "No target   (click an NPC, barrel or crate to target)"
 	var o := player.interact
@@ -125,7 +166,6 @@ func _update_ammo() -> void:
 	reload_bar.value = player.reload_progress()
 	if ammo_icons != null:
 		ammo_icons.visible = true
-		ammo_icons.position.x = ammo_label.position.x + ammo_label.get_minimum_size().x + 10.0
 		ammo_icons.queue_redraw()
 
 
@@ -139,6 +179,10 @@ func _draw_ammo_icons() -> void:
 	if player.is_reloading():
 		loaded = int(floor(player.reload_progress() * mag))
 	var c := ammo_icons
+	# Drawn on a small design grid, then scaled up and centred in the box above the Shoot button.
+	var content_w := 22.0 if w == "pistol" else float(mag) * ((7.0 if w == "shotgun" else 5.0) + 3.0) - 3.0
+	var origin := Vector2((c.size.x - content_w * AMMO_SCALE) * 0.5, (c.size.y - 22.0 * AMMO_SCALE) * 0.5)
+	c.draw_set_transform(origin, 0.0, Vector2(AMMO_SCALE, AMMO_SCALE))
 	if w == "pistol":
 		# Revolver cylinder seen end-on: one chamber per round.
 		var cen := Vector2(11, 11)
@@ -153,6 +197,7 @@ func _draw_ammo_icons() -> void:
 				c.draw_circle(p, 1.0, Color("8a6a24"))  # primer
 			else:
 				c.draw_circle(p, 2.6, Color(0.05, 0.05, 0.06))  # empty chamber
+		c.draw_set_transform_matrix(Transform2D.IDENTITY)
 		return
 	# Rifle rounds / shotgun shells standing in a row.
 	var shell := w == "shotgun"
@@ -171,6 +216,7 @@ func _draw_ammo_icons() -> void:
 		else:
 			c.draw_rect(r, Color(0.0, 0.0, 0.0, 0.35))
 			c.draw_rect(r, Color(0.6, 0.6, 0.6, 0.5), false, 1.0)
+	c.draw_set_transform_matrix(Transform2D.IDENTITY)
 
 
 ## E opens/closes the nearest door, K kicks a closed one open.
@@ -182,8 +228,17 @@ func _use_door(kick: bool, only: String = "") -> void:
 		if crate.opened:
 			_flash_message("Already opened")
 			return
+		if crate.locked:
+			if player.keys <= 0:
+				_flash_message("Locked - find a key")
+				return
+			player.keys -= 1
+			crate.unlock()  # the key is used up; the "Found" message below follows
 		var found := crate.open_container(player.global_position)
-		_flash_message("Found: %s" % MapData.NPC_LOOT.get(found, found) if found != "none" else "The %s is empty" % crate.label().to_lower())
+		if found == "water":
+			_flash_message("The %s is full of water" % crate.label().to_lower())
+		else:
+			_flash_message("Found: %s" % MapData.NPC_LOOT.get(found, found) if found != "none" else "The %s is empty" % crate.label().to_lower())
 		return
 	var door := _active_door()  # a selected door the player walked up to beats the nearest one
 	if door == null:
@@ -196,6 +251,8 @@ func _use_door(kick: bool, only: String = "") -> void:
 		if only == "close":
 			return
 		door.open(player.position, kick)
+		if kick:
+			_ambush_from_kick(door)
 	var reach := door.width + 24.0
 	player.refresh_nav(Rect2(door.position - Vector2(reach, reach), Vector2(reach, reach) * 2.0))
 
@@ -208,6 +265,7 @@ func _ready() -> void:
 	renderer.physics_enabled = true
 	add_child(renderer)
 	renderer.build(data)
+	_bounty_total = get_tree().get_nodes_in_group("bounty").size()
 
 	player = Player.new()
 	player.map_size = data["size"]
@@ -217,7 +275,7 @@ func _ready() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
 	var hint := Label.new()
-	hint.text = "Click: walk there   Right-click: shoot at cursor   Click NPC / barrel / crate: target   Click door / window: go to it   Click horse: ride it"
+	hint.text = "Click: walk there   Right-click: attack toward cursor   Click NPC / barrel / crate: target   Click door / window: go to it"
 	hint.position = Vector2(12, 8)
 	hint.add_theme_color_override("font_shadow_color", Color.BLACK)
 	hint.add_theme_constant_override("shadow_offset_x", 1)
@@ -244,51 +302,39 @@ func _ready() -> void:
 	message_label.add_theme_constant_override("shadow_offset_y", 1)
 	message_label.modulate.a = 0.0
 	layer.add_child(message_label)
+	combat = Combat.new()
+	combat.player = player
+	add_child(combat)
+	combat.message.connect(_flash_message)
+	player.notice.connect(_flash_message)
+	combat.changed.connect(_refresh_combat_panel)
+	_build_combat_panel(layer)
+	_build_combat_cards(layer)
 	_build_hat_picker(layer)
 	_build_weapon_bar(layer)
 	_build_action_bar(layer)
 	_build_health_bar(layer)
 
 
-## Vertical column of weapon buttons on the right edge of the screen.
+## Weapon HUD: one button at the bottom right showing the equipped weapon (fists at the start).
+## Clicking it opens the weapon wheel, which pauses the game.
 func _build_weapon_bar(layer: CanvasLayer) -> void:
 	var panel := PanelContainer.new()
 	layer.add_child(panel)
-	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 4)
-	panel.add_child(col)
-	var group := ButtonGroup.new()
-	for key in Weapons.PLAYER_CHOICES:
-		var b := Button.new()
-		b.toggle_mode = true
-		b.button_group = group
-		b.focus_mode = Control.FOCUS_NONE  # keep keys for walking / shooting
-		b.custom_minimum_size = Vector2(96, 96)
-		b.tooltip_text = Weapons.tooltip(key)
-		b.button_pressed = key == Player.weapon
-		var tex := Weapons.icon_texture(key)
-		if tex != null:
-			# Image icon (e.g. the revolver), scaled to fit inside the button with a small margin.
-			var img := TextureRect.new()
-			img.texture = tex
-			img.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			img.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-			img.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-			img.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-			img.offset_left = 8
-			img.offset_top = 8
-			img.offset_right = -8
-			img.offset_bottom = -8
-			b.add_child(img)
-		else:
-			var icon := Control.new()
-			icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-			icon.draw.connect(func() -> void: Weapons.draw_icon(icon, key, icon.size))
-			b.add_child(icon)
-		b.pressed.connect(player.set_weapon.bind(key))
-		col.add_child(b)
-	# Bottom-right, so the taller column stays clear of the hat picker in the top-right corner.
+	weapon_btn = Button.new()
+	weapon_btn.focus_mode = Control.FOCUS_NONE  # keep keys for walking / shooting
+	weapon_btn.custom_minimum_size = Vector2(96, 96)
+	weapon_btn.pressed.connect(_open_weapon_wheel)
+	panel.add_child(weapon_btn)
+	weapon_icon = Control.new()
+	weapon_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	weapon_icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	weapon_icon.draw.connect(func() -> void:
+		Weapons.draw_icon_at(weapon_icon, Player.weapon, weapon_icon.size * 0.5 - Vector2(0, 6), 62.0)
+		var f := ThemeDB.fallback_font
+		weapon_icon.draw_string(f, Vector2(0, weapon_icon.size.y - 6), Weapons.label(Player.weapon), HORIZONTAL_ALIGNMENT_CENTER, weapon_icon.size.x, 13, Color(1, 1, 1, 0.9)))
+	weapon_btn.add_child(weapon_icon)
+	# Bottom-right, so it stays clear of the hat picker in the top-right corner.
 	panel.anchor_left = 1.0
 	panel.anchor_right = 1.0
 	panel.anchor_top = 1.0
@@ -297,6 +343,300 @@ func _build_weapon_bar(layer: CanvasLayer) -> void:
 	panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	panel.offset_right = -8
 	panel.offset_bottom = -40
+
+
+## A kicked-in door surprises the hostile NPCs inside the building it belongs to (the roof the
+## door sits on or beside). If there are any, combat starts at once with them caught off guard.
+func _ambush_from_kick(door: OpeningNode) -> void:
+	if combat == null or combat.active:
+		return
+	var surprised: Array = []
+	for roof in MapData.working.get("roofs", []):
+		var pts: PackedVector2Array = roof["points"]
+		if pts.size() < 3 or not _door_on_roof(door.global_position, pts):
+			continue
+		for n in get_tree().get_nodes_in_group("npcs"):
+			var npc := n as NpcNode
+			if npc != null and npc.hp > 0 and npc.disposition == "hostile" and not surprised.has(npc) \
+					and Geometry2D.is_point_in_polygon(npc.global_position, pts):
+				surprised.append(npc)
+	if not surprised.is_empty():
+		combat.start_ambush(surprised)
+
+
+## True when `p` is inside the roof outline or within a door's thickness of its edge.
+func _door_on_roof(p: Vector2, pts: PackedVector2Array) -> bool:
+	if Geometry2D.is_point_in_polygon(p, pts):
+		return true
+	for i in pts.size():
+		var closest := Geometry2D.get_closest_point_to_segment(p, pts[i], pts[(i + 1) % pts.size()])
+		if closest.distance_to(p) <= 32.0:
+			return true
+	return false
+
+
+## Opens the radial weapon picker over the game and pauses everything until it is closed.
+func _open_weapon_wheel() -> void:
+	if _game_over or _wheel_layer != null:
+		return
+	player.fire_held = false
+	_wheel_layer = CanvasLayer.new()
+	_wheel_layer.layer = 20
+	_wheel_layer.process_mode = Node.PROCESS_MODE_ALWAYS  # stays clickable while paused
+	add_child(_wheel_layer)
+	var wheel := WeaponWheel.new()
+	_wheel_layer.add_child(wheel)
+	wheel.setup(player, Weapons.PLAYER_CHOICES)
+	wheel.chosen.connect(func(key: String) -> void:
+		player.set_weapon(key)
+		_close_weapon_wheel())
+	wheel.closed.connect(_close_weapon_wheel)
+	get_tree().paused = true
+
+
+func _close_weapon_wheel() -> void:
+	if _wheel_layer == null:
+		return
+	_wheel_layer.queue_free()
+	_wheel_layer = null
+	if not _game_over:
+		get_tree().paused = false
+
+
+## Win: every bounty NPC on the map is dead. A map without bounties is won once no hostile NPC
+## is left alive (after at least one hostile has been seen, so a peaceful map never "ends").
+func _check_game_over() -> void:
+	if _game_over:
+		return
+	var won := false
+	var why := ""
+	if _bounty_total > 0:
+		won = get_tree().get_nodes_in_group("bounty").is_empty()
+		why = "Every bounty has been collected." if _bounty_total > 1 else "The bounty has been collected."
+	else:
+		var hostiles := 0
+		for n in get_tree().get_nodes_in_group("npcs"):
+			if n is NpcNode and (n as NpcNode).disposition == "hostile" and (n as NpcNode).hp > 0:
+				hostiles += 1
+		if hostiles > 0:
+			_saw_hostile = true
+		won = _saw_hostile and hostiles == 0
+		why = "All hostiles have been defeated."
+	if won:
+		_show_game_over(why)
+
+
+func _show_game_over(why: String) -> void:
+	_game_over = true
+	if combat != null:
+		combat.end_combat("")
+	var layer := CanvasLayer.new()
+	layer.layer = 10
+	layer.process_mode = Node.PROCESS_MODE_ALWAYS  # stays clickable while the game is paused
+	add_child(layer)
+	var shade := ColorRect.new()
+	shade.color = Color(0, 0, 0, 0.55)
+	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(shade)
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(center)
+	var panel := PanelContainer.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.16, 0.11, 0.07, 0.97)
+	style.border_color = Color(0.85, 0.65, 0.25)
+	style.set_border_width_all(3)
+	style.set_corner_radius_all(8)
+	style.set_content_margin_all(20)
+	panel.add_theme_stylebox_override("panel", style)
+	center.add_child(panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	panel.add_child(box)
+	var title := Label.new()
+	title.text = "BOUNTY COLLECTED" if _bounty_total > 0 else "VICTORY"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 30)
+	title.add_theme_color_override("font_color", Color(1.0, 0.82, 0.3))
+	box.add_child(title)
+	var info := Label.new()
+	info.text = why
+	info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(info)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 10)
+	box.add_child(row)
+	var again := Button.new()
+	again.text = "Play again"
+	again.custom_minimum_size = Vector2(130, 40)
+	again.pressed.connect(func() -> void:
+		get_tree().paused = false
+		get_tree().reload_current_scene())
+	row.add_child(again)
+	var back := Button.new()
+	back.text = "Back to editor"
+	back.custom_minimum_size = Vector2(130, 40)
+	back.pressed.connect(func() -> void:
+		get_tree().paused = false
+		get_tree().change_scene_to_file("res://scenes/map_editor.tscn"))
+	row.add_child(back)
+	get_tree().paused = true  # the world stops; only the buttons above still work
+
+
+## Turn order panel (left side), shown only during turn-based combat: round number, everyone's
+## d20 initiative roll in turn order with the current turn marked, what you have left this turn,
+## and an End turn button.
+func _build_combat_panel(layer: CanvasLayer) -> void:
+	combat_panel = PanelContainer.new()
+	combat_panel.visible = false
+	# Left edge, below the HP / ammo / target lines.
+	combat_panel.position = Vector2(12, 146)
+	# Compact: half the size of the first version (small fonts, tight margins).
+	combat_panel.custom_minimum_size.x = 120
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.1, 0.08, 0.08, 0.88)
+	style.border_color = Color(0.85, 0.3, 0.25)
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(3)
+	style.set_content_margin_all(4)
+	combat_panel.add_theme_stylebox_override("panel", style)
+	layer.add_child(combat_panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 1)
+	combat_panel.add_child(box)
+	combat_title = Label.new()
+	combat_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	combat_title.add_theme_font_size_override("font_size", COMBAT_FONT)
+	combat_title.add_theme_color_override("font_color", Color(1.0, 0.55, 0.45))
+	box.add_child(combat_title)
+	var sub := Label.new()
+	sub.text = "Initiative (d20)"
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.add_theme_font_size_override("font_size", COMBAT_FONT - 2)
+	sub.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+	box.add_child(sub)
+	combat_list = VBoxContainer.new()
+	combat_list.add_theme_constant_override("separation", 0)
+	box.add_child(combat_list)
+	combat_status = Label.new()
+	combat_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	combat_status.add_theme_font_size_override("font_size", COMBAT_FONT)
+	box.add_child(combat_status)
+	end_turn_btn = Button.new()
+	end_turn_btn.text = "End turn"
+	end_turn_btn.focus_mode = Control.FOCUS_NONE
+	end_turn_btn.add_theme_font_size_override("font_size", COMBAT_FONT)
+	end_turn_btn.custom_minimum_size = Vector2(0, 20)
+	end_turn_btn.pressed.connect(func() -> void: combat.end_player_turn())
+	box.add_child(end_turn_btn)
+
+
+## Three special-action cards at the bottom centre, half tucked below the screen edge; hover to
+## lift one fully and read it, click to play it. Shown only during combat.
+func _build_combat_cards(layer: CanvasLayer) -> void:
+	card_row = Control.new()
+	card_row.visible = false
+	card_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var w := COMBAT_CARDS.size() * ActionCard.SIZE.x + (COMBAT_CARDS.size() - 1) * CARD_GAP
+	card_row.anchor_left = 0.5
+	card_row.anchor_right = 0.5
+	card_row.anchor_top = 1.0
+	card_row.anchor_bottom = 1.0
+	card_row.offset_left = -w * 0.5
+	card_row.offset_right = w * 0.5
+	layer.add_child(card_row)
+	for i in COMBAT_CARDS.size():
+		var d: Dictionary = COMBAT_CARDS[i]
+		var card := ActionCard.new()
+		card.kind = d["kind"]
+		card.title = d["title"]
+		card.desc = d["desc"]
+		card.accent = d["accent"]
+		card.rest_y = -ActionCard.SIZE.y * 0.5  # top half on screen, bottom half hidden
+		card.position = Vector2(i * (ActionCard.SIZE.x + CARD_GAP), card.rest_y)
+		card.played.connect(_on_card_played)
+		card_row.add_child(card)
+		cards.append(card)
+
+
+func _on_card_played(kind: String) -> void:
+	if not player.play_card(kind):
+		return
+	_last_card = kind
+	for d in COMBAT_CARDS:
+		if d["kind"] == kind:
+			_flash_message("%s!" % d["title"])
+
+
+## Per frame: show the cards in combat, grey out those that can't be played right now, and lift
+## the door prompt / messages above them.
+func _update_combat_cards() -> void:
+	if card_row == null:
+		return
+	var on := combat != null and combat.active
+	card_row.visible = on
+	door_prompt.offset_top = -60.0 - (90.0 if on else 0.0)
+	message_label.offset_top = -100.0 - (90.0 if on else 0.0)
+	if not on:
+		return
+	if not player.card_played:
+		_last_card = ""
+	for c in cards:
+		var card: ActionCard = c
+		card.set_state(player.can_play_card(card.kind), player.card_played and card.kind == _last_card)
+
+
+func _refresh_combat_panel() -> void:
+	if combat_panel == null:
+		return
+	combat_panel.visible = combat.active
+	if not combat.active:
+		return
+	combat_title.text = "COMBAT - Round %d" % combat.round_num
+	for c in combat_list.get_children():
+		combat_list.remove_child(c)
+		c.queue_free()
+	for i in combat.order.size():
+		var e: Dictionary = combat.order[i]
+		var current: bool = i == combat.turn
+		var row := Label.new()
+		var who := str(e["name"])
+		var node = e["node"]  # untyped: may be an NPC freed this frame
+		if not is_instance_valid(node):
+			continue
+		if node is NpcNode:
+			who += "  (HP %d)" % (node as NpcNode).hp
+		elif node == player:
+			who += "  (HP %d)" % player.hp
+		row.text = "%s %2d   %s" % [">" if current else "  ", int(e["roll"]), who]
+		var col := Color(0.6, 0.85, 1.0) if node == player else Color(1.0, 0.6, 0.55)
+		if current:
+			col = Color(1.0, 0.88, 0.35)
+		row.add_theme_color_override("font_color", col)
+		row.add_theme_font_size_override("font_size", COMBAT_FONT)
+		combat_list.add_child(row)
+	_update_combat_status()
+
+
+## Per-frame part of the panel: what the player still has this turn.
+func _update_combat_status() -> void:
+	if combat_status == null or combat == null or not combat.active:
+		return
+	_hp_refresh -= get_process_delta_time()
+	if _hp_refresh <= 0.0:
+		_hp_refresh = 0.3
+		_refresh_combat_panel()  # keeps the HP figures in the list current
+		return
+	if combat.is_player_turn():
+		var act := "action used"
+		if player.action_left:
+			act = "action ready" if player.extra_actions == 0 else "%d actions ready" % (player.extra_actions + 1)
+		combat_status.text = "Your turn\nmove %d px, %s" % [int(player.move_left), act]
+		end_turn_btn.disabled = false
+	else:
+		combat_status.text = "%s's turn..." % combat.current_name()
+		end_turn_btn.disabled = true
 
 
 ## Open / Kick / Close buttons at the bottom right, left of the weapon column.
@@ -316,17 +656,15 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 		b.visible = false  # shown by _update_door_buttons() when a matching door is near
 		col.add_child(b)
 		door_buttons[d[0]] = b
-	# Ride / Dismount: shown when a horse is within reach, or while riding.
-	ride_btn = Button.new()
-	ride_btn.text = "Ride"
-	ride_btn.focus_mode = Control.FOCUS_NONE
-	ride_btn.custom_minimum_size = Vector2(90, 56)
-	ride_btn.add_theme_color_override("font_color", Color(0.95, 0.8, 0.5))
-	ride_btn.pressed.connect(player.toggle_mount)
-	ride_btn.visible = false
-	col.add_child(ride_btn)
 	# Shoot: fires at the current target; holding it keeps firing at the weapon's rate.
 	# Disabled (in _process) while there is no target or no gun selected.
+	# Drawn ammo just above the Shoot button: a revolver cylinder for the pistol, a row of rounds otherwise.
+	ammo_icons = Control.new()
+	ammo_icons.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ammo_icons.custom_minimum_size = Vector2(90, 22.0 * AMMO_SCALE + 6.0)
+	ammo_icons.visible = false
+	ammo_icons.draw.connect(_draw_ammo_icons)
+	col.add_child(ammo_icons)
 	shoot_btn = Button.new()
 	shoot_btn.text = "Shoot"
 	shoot_btn.focus_mode = Control.FOCUS_NONE
@@ -338,6 +676,29 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 			player.shoot_at(player.target.global_position))  # a quick tap still fires once
 	shoot_btn.button_up.connect(func() -> void: player.fire_held = false)
 	col.add_child(shoot_btn)
+	# Untarget: clears the target (NPC / barrel / crate) and the selected door or window.
+	untarget_btn = Button.new()
+	untarget_btn.text = "Untarget"
+	untarget_btn.tooltip_text = "Clear the current target and selection"
+	untarget_btn.focus_mode = Control.FOCUS_NONE
+	untarget_btn.custom_minimum_size = Vector2(90, 40)
+	untarget_btn.pressed.connect(func() -> void:
+		player.fire_held = false
+		player.set_target(null)
+		player.set_interact(null))
+	col.add_child(untarget_btn)
+	# Auto reload (toggle): tops the magazine up by itself shortly after you stop firing.
+	var auto_btn := Button.new()
+	auto_btn.toggle_mode = true
+	auto_btn.button_pressed = Player.auto_reload
+	auto_btn.text = "Auto reload: %s" % ("on" if Player.auto_reload else "off")
+	auto_btn.tooltip_text = "When on, a partly used magazine is reloaded %.0f s after your last shot" % Player.AUTO_RELOAD_DELAY
+	auto_btn.focus_mode = Control.FOCUS_NONE
+	auto_btn.custom_minimum_size = Vector2(90, 56)
+	auto_btn.toggled.connect(func(on: bool) -> void:
+		Player.auto_reload = on
+		auto_btn.text = "Auto reload: %s" % ("on" if on else "off"))
+	col.add_child(auto_btn)
 	panel.anchor_left = 1.0
 	panel.anchor_right = 1.0
 	panel.anchor_top = 1.0
@@ -371,13 +732,6 @@ func _build_health_bar(layer: CanvasLayer) -> void:
 	ammo_label.add_theme_constant_override("shadow_offset_x", 1)
 	ammo_label.add_theme_constant_override("shadow_offset_y", 1)
 	layer.add_child(ammo_label)
-	# Drawn ammo next to the ammo text: a revolver cylinder for the pistol, a row of rounds otherwise.
-	ammo_icons = Control.new()
-	ammo_icons.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	ammo_icons.custom_minimum_size = Vector2(120, 22)
-	ammo_icons.position = Vector2(12, 55)
-	ammo_icons.draw.connect(_draw_ammo_icons)
-	layer.add_child(ammo_icons)
 	target_label = Label.new()
 	target_label.position = Vector2(12, 94)
 	target_label.add_theme_color_override("font_shadow_color", Color.BLACK)

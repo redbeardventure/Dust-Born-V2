@@ -10,10 +10,11 @@ const OUTLINE := Color(0.1, 0.07, 0.04, 0.9)
 ## kind picks the drawing routine; col/light/dark are the hair tones.
 ## Optional: front = how far the head reaches forward, face = colour of the face dot.
 const STYLES := [
-	{"name": "Elder (long white)", "kind": "elder", "col": Color("d6d9de"), "light": Color("fbfcfd"), "dark": Color("868b95")},
-	{"name": "Blonde swept", "kind": "swept", "col": Color("e0b84e"), "light": Color("f8e08a"), "dark": Color("a8802c")},
+	# Short brown keeps its old slot (third) so NPC heads saved in existing maps don't change.
+	{"name": "Short black", "kind": "fringe", "col": Color("2a2420"), "light": Color("4d443d"), "dark": Color("110d0b")},
+	{"name": "Short blonde", "kind": "fringe", "col": Color("e0b84e"), "light": Color("f8e08a"), "dark": Color("a8802c")},
 	{"name": "Short brown", "kind": "fringe", "col": Color("6a4428"), "light": Color("8e6440"), "dark": Color("3a2412")},
-	{"name": "Pale tousled", "kind": "tousled", "col": Color("e8dcb0"), "light": Color("fffaf0"), "dark": Color("b0a274")},
+	{"name": "Short auburn", "kind": "fringe", "col": Color("8c3a1c"), "light": Color("b85e36"), "dark": Color("4e1c0c")},
 ]
 
 

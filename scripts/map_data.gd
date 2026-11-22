@@ -8,7 +8,8 @@ extends RefCounted
 ##   walls:    [{points, closed, width}]
 ##   props:    [{type, pos, scale, rot, seed, loot}]   (loot only matters for LOOT_PROPS)
 ##   lights:   [{pos, radius, color, energy, flicker}]
-##   npcs:     [{name, pos, weapon, loot, disposition, patrol: PackedVector2Array}]
+##   npcs:     [{name, pos, weapon, loot, disposition, patrol: PackedVector2Array, bounty?: bool}]
+##             (bounty only on hostile NPCs: killing every bounty wins the play-test)
 ##   openings: [{kind: "door"|"window", pos, rot, width, thick}]   (sit in a wall; the wall is cut open there)
 ##   roofs:    [{type (key of ROOFS), points: PackedVector2Array}]   (drawn above everything)
 ## NOTE: packed arrays are never mutated in place, only replaced, so undo snapshots stay valid.
@@ -35,9 +36,9 @@ static var ROOFS: Dictionary = {
 	"roof_thatch": {"label": "Thatch", "a": Color("8a7436"), "b": Color("b8a054"), "freq": 0.12, "outline": Color(0.2, 0.15, 0.05, 0.85), "planks": false, "speckle": 0.14},
 	"roof_tin": {"label": "Corrugated tin", "a": Color("6f747a"), "b": Color("9aa0a8"), "freq": 0.04, "outline": Color(0.1, 0.11, 0.12, 0.9), "planks": false, "plank_w": 16, "vertical": true, "speckle": 0.02},
 	"roof_train": {"label": "Train car roof (curved)", "shape": "round", "a": Color("3f444c"), "b": Color("5a606a"), "freq": 0.05, "outline": Color(0.05, 0.06, 0.07, 0.95), "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.04},
-	"roof_canvas": {"label": "Wagon canvas", "shape": "flat", "a": Color("cdbf9c"), "b": Color("e6dbbd"), "freq": 0.08, "outline": Color(0.38, 0.3, 0.18, 0.9), "planks": false, "speckle": 0.0},
-	"roof_canvas_dark": {"label": "Weathered canvas", "shape": "flat", "a": Color("8d826a"), "b": Color("b0a587"), "freq": 0.09, "outline": Color(0.2, 0.17, 0.1, 0.9), "planks": false, "speckle": 0.04},
-	"roof_canvas_blue": {"label": "Blue wagon tarp (curved)", "shape": "round", "a": Color("4c6b92"), "b": Color("7193bd"), "freq": 0.08, "outline": Color(0.12, 0.18, 0.3, 0.9), "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.0},
+	"roof_canvas": {"label": "Wagon canvas (ribbed)", "shape": "round", "a": Color("cdbf9c"), "b": Color("e6dbbd"), "freq": 0.08, "outline": Color(0.38, 0.3, 0.18, 0.9), "planks": false, "ribs": 2, "speckle": 0.0},
+	"roof_canvas_dark": {"label": "Weathered canvas (ribbed)", "shape": "round", "a": Color("8d826a"), "b": Color("b0a587"), "freq": 0.09, "outline": Color(0.2, 0.17, 0.1, 0.9), "planks": false, "ribs": 2, "speckle": 0.04},
+	"roof_canvas_blue": {"label": "Blue wagon tarp (curved)", "shape": "round", "a": Color("4c6b92"), "b": Color("7193bd"), "freq": 0.08, "outline": Color(0.12, 0.18, 0.3, 0.9), "planks": false, "ribs": 2, "speckle": 0.0},
 	"roof_sod": {"label": "Sod / turf", "a": Color("4a6024"), "b": Color("74893a"), "freq": 0.05, "outline": Color(0.1, 0.15, 0.05, 0.85), "planks": false, "speckle": 0.08},
 }
 
@@ -62,7 +63,7 @@ static var TERRAIN: Dictionary = {
 	"wood_vertical": {"label": "Wood: mid boards (vertical)", "a": Color("6b4526"), "b": Color("8f6338"), "freq": 0.04, "outline": Color(0.1, 0.07, 0.04, 0.7), "blocks_scatter": true, "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.0},
 	"deck_ship": {"label": "Wood: ship deck (lengthwise)", "a": Color("5b3a20"), "b": Color("7d5632"), "freq": 0.05, "outline": Color(0.07, 0.04, 0.02, 0.9), "blocks_scatter": true, "planks": false, "plank_w": 16, "vertical": true, "speckle": 0.0},
 	"dock_weathered": {"label": "Wood: weathered dock", "a": Color("6b5638"), "b": Color("8f7852"), "freq": 0.05, "outline": Color(0.1, 0.08, 0.06, 0.8), "blocks_scatter": true, "planks": false, "plank_w": 32, "vertical": false, "cracks": true, "speckle": 0.01},
-	"dock_vertical": {"label": "Wood: weathered dock (vertical)", "a": Color("6b5638"), "b": Color("8f7852"), "freq": 0.05, "outline": Color(0.1, 0.08, 0.06, 0.8), "blocks_scatter": true, "planks": false, "plank_w": 32, "vertical": true, "cracks": true, "speckle": 0.01},
+	"dock_vertical": {"label": "Wood: weathered dock (vertical)", "a": Color("6b5638"), "b": Color("8f7852"), "freq": 0.05, "outline": Color(0.1, 0.08, 0.06, 0.8), "blocks_scatter": true, "planks": false, "plank_w": 16, "vertical": true, "cracks": true, "speckle": 0.01},
 	"driftwood": {"label": "Wood: bleached driftwood", "a": Color("9a8f80"), "b": Color("c0b6a2"), "freq": 0.05, "outline": Color(0.2, 0.18, 0.15, 0.7), "blocks_scatter": true, "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.01},
 	"canvas_red": {"label": "Red canvas / tarp", "a": Color("b2402e"), "b": Color("d4583e"), "freq": 0.07, "outline": Color(0.3, 0.08, 0.05, 0.85), "blocks_scatter": true, "planks": false, "speckle": 0.0},
 	# --- train theme ---
@@ -115,7 +116,7 @@ static var THEMES: Dictionary = {
 		"background": "grass",
 		"ambient": Color(0.62, 0.64, 0.72),
 		"terrain": ["grass", "grass_dark", "dirt", "stone", "wood", "wood_planks_dark", "wood_worn", "wood_planks_light", "wood_deck", "wood_braced", "wood_vertical", "canvas_red", "dark", "carpet", "water", "shadow", "moss", "blood"],
-		"props": ["tree", "bush", "rock", "barrel", "crate", "table", "well", "torch", "horse_chestnut", "horse_bay", "horse_black", "horse_grey", "horse_palomino", "cow_holstein", "cow_black", "cow_brown", "cow_hereford", "longhorn_tan", "longhorn_spotted", "longhorn_red"],
+		"props": ["tree", "bush", "rock", "barrel", "crate", "table", "well", "torch"],
 	},
 	"train": {
 		"label": "Train / Rail yard",
@@ -145,7 +146,7 @@ static var THEMES: Dictionary = {
 		"background": "grass",
 		"ambient": Color(0.86, 0.86, 0.9),
 		"terrain": ["grass", "grass_dark", "dirt", "cobble", "plaza", "wood", "wood_planks_dark", "wood_worn", "wood_planks_light", "wood_deck", "wood_braced", "wood_vertical", "dock_weathered", "dock_vertical", "canvas_red", "stone", "carpet", "water", "shadow"],
-		"props": ["stall", "fountain", "lamppost", "cart", "haybale", "horse_chestnut", "horse_bay", "horse_black", "horse_grey", "horse_palomino", "cow_holstein", "cow_black", "cow_brown", "cow_hereford", "longhorn_tan", "longhorn_spotted", "longhorn_red", "well", "tree", "bush", "barrel", "crate", "table", "torch", "rock"],
+		"props": ["stall", "fountain", "lamppost", "cart", "haybale", "well", "tree", "bush", "barrel", "crate", "table", "torch", "rock"],
 		"scatter": ["tree", "rock", "bush"],
 	},
 	"coast": {
@@ -171,7 +172,7 @@ static var THEMES: Dictionary = {
 		"background": "trail_dust",
 		"ambient": Color(0.9, 0.86, 0.8),
 		"terrain": ["trail_dust", "wagon_ruts", "grass", "grass_dark", "dirt", "mud", "wagon_boards", "wood_planks_dark", "wood_worn", "wagon_rug", "carpet", "canvas_red", "water", "shadow"],
-		"props": ["wagon_wheel", "wagon_hitch", "wagon_seat", "trunk", "bedroll", "sacks", "wagon_lantern", "horse_chestnut", "horse_bay", "horse_black", "horse_grey", "horse_palomino", "cow_holstein", "cow_black", "cow_brown", "cow_hereford", "longhorn_tan", "longhorn_spotted", "longhorn_red", "barrel", "crate", "campfire", "haybale", "stump", "rock", "bush", "tree"],
+		"props": ["wagon_wheel", "wagon_hitch", "wagon_seat", "trunk", "bedroll", "sacks", "wagon_lantern", "barrel", "crate", "campfire", "haybale", "stump", "rock", "bush", "tree"],
 		"scatter": ["tree", "rock", "bush"],
 	},
 }
@@ -215,7 +216,7 @@ static var PROPS: Dictionary = {
 	"snowdrift": {"label": "Snowdrift", "radius": 34.0, "solid": 0.0},
 	"snowman": {"label": "Snowman", "radius": 20.0, "solid": 14.0},
 	"campfire": {"label": "Campfire (light)", "radius": 24.0, "solid": 0.0, "light": {"r": 300.0, "c": Color(1.0, 0.55, 0.2), "e": 1.2}},
-	"stump": {"label": "Tree stump", "radius": 18.0, "solid": 14.0},
+	"stump": {"label": "Tree stump", "radius": 18.0, "solid": 14.0, "no_shadow": true},
 	# town
 	"stall": {"label": "Market stall", "radius": 52.0, "solid": 0.0, "rect": Vector2(96, 64)},
 	"fountain": {"label": "Fountain", "radius": 52.0, "solid": 46.0},
@@ -236,26 +237,7 @@ static var PROPS: Dictionary = {
 	"bedroll": {"label": "Bedroll", "radius": 26.0, "solid": 0.0},
 	"sacks": {"label": "Grain sacks", "radius": 18.0, "solid": 12.0},
 	"wagon_lantern": {"label": "Wagon lantern (light)", "radius": 10.0, "solid": 0.0, "light": {"r": 230.0, "c": Color(1.0, 0.78, 0.45), "e": 1.0}},
-	# horses (saddled, seen from above; head points to -y, so rotate the prop to face them)
-	"horse_chestnut": {"label": "Horse: chestnut", "radius": 46.0, "solid": 0.0, "rect": Vector2(30, 84)},
-	"horse_bay": {"label": "Horse: bay", "radius": 46.0, "solid": 0.0, "rect": Vector2(30, 84)},
-	"horse_black": {"label": "Horse: black", "radius": 46.0, "solid": 0.0, "rect": Vector2(30, 84)},
-	"horse_grey": {"label": "Horse: dapple grey", "radius": 46.0, "solid": 0.0, "rect": Vector2(30, 84)},
-	"horse_palomino": {"label": "Horse: palomino", "radius": 46.0, "solid": 0.0, "rect": Vector2(30, 84)},
-	# cattle (head points to -y like the horses)
-	"cow_holstein": {"label": "Cow: black & white", "radius": 42.0, "solid": 0.0, "rect": Vector2(36, 74)},
-	"cow_black": {"label": "Cow: black", "radius": 42.0, "solid": 0.0, "rect": Vector2(36, 74)},
-	"cow_brown": {"label": "Cow: brown", "radius": 42.0, "solid": 0.0, "rect": Vector2(36, 74)},
-	"cow_hereford": {"label": "Cow: red, white face", "radius": 42.0, "solid": 0.0, "rect": Vector2(36, 74)},
-	"longhorn_tan": {"label": "Longhorn: tan", "radius": 50.0, "solid": 0.0, "rect": Vector2(36, 74)},
-	"longhorn_spotted": {"label": "Longhorn: spotted", "radius": 50.0, "solid": 0.0, "rect": Vector2(36, 74)},
-	"longhorn_red": {"label": "Longhorn: red", "radius": 50.0, "solid": 0.0, "rect": Vector2(36, 74)},
 }
-
-## Prop keys that are horses (drawn by PropNode._draw_horse).
-const HORSE_PROPS := ["horse_chestnut", "horse_bay", "horse_black", "horse_grey", "horse_palomino"]
-## Prop keys that are cattle (drawn by PropNode._draw_cow). They wander in play-test but can't be ridden.
-const COW_PROPS := ["cow_holstein", "cow_black", "cow_brown", "cow_hereford", "longhorn_tan", "longhorn_spotted", "longhorn_red"]
 
 
 ## NPC option lists (key -> label). Order is the dropdown order.
@@ -274,12 +256,22 @@ const NPC_LOOT := {
 	"gold": "Gold coins",
 	"potion": "Potion",
 	"food": "Food",
-	"ammo": "Ammo",
+	"water": "Water",
 	"gems": "Gems",
 	"key": "Key",
-	"scroll": "Scroll",
-	"weapon": "Weapon drop",
+	"dagger": "Dagger",
+	"pistol": "Pistol",
+	"shotgun": "Shotgun",
+	"rifle": "Rifle",
 }
+## Loot kinds from older maps that no longer exist -> what they become.
+const LOOT_MIGRATE := {"ammo": "none", "weapon": "none"}
+
+
+static func clean_loot(k: String) -> String:
+	k = str(LOOT_MIGRATE.get(k, k))
+	return k if NPC_LOOT.has(k) else "none"
+const DEFAULT_NPC_HP := 40  # matches NpcNode.MAX_HP
 const NPC_DISPOSITIONS := {
 	"friendly": "Friendly",
 	"hostile": "Hostile",
@@ -343,10 +335,10 @@ static func new_wall(pts: PackedVector2Array, closed: bool, width: float = 12.0,
 const LOOT_PROPS := ["barrel", "crate", "trunk"]
 
 
-static func new_prop(type: String, pos: Vector2, scale: float = 1.0, rot: float = 0.0, seed_v: int = -1, loot: String = "none") -> Dictionary:
+static func new_prop(type: String, pos: Vector2, scale: float = 1.0, rot: float = 0.0, seed_v: int = -1, loot: String = "none", locked: bool = false) -> Dictionary:
 	if seed_v < 0:
 		seed_v = randi()
-	return {"type": type, "pos": pos, "scale": scale, "rot": rot, "seed": seed_v, "loot": loot}
+	return {"type": type, "pos": pos, "scale": scale, "rot": rot, "seed": seed_v, "loot": loot, "locked": locked}
 
 
 static func new_light(pos: Vector2, radius: float = 300.0, color: Color = Color(1, 0.75, 0.45), energy: float = 1.0, flicker: bool = true) -> Dictionary:
@@ -361,7 +353,7 @@ static func new_opening(kind: String, pos: Vector2, rot: float = 0.0, width: flo
 
 ## head = index into head_art.gd (hats, then hair styles); -1 = none.
 static func new_npc(npc_name: String, pos: Vector2, weapon: String = "none", loot: String = "none", disposition: String = "friendly", patrol: PackedVector2Array = PackedVector2Array(), head: int = -1) -> Dictionary:
-	return {"name": npc_name, "pos": pos, "weapon": weapon, "loot": loot, "disposition": disposition, "patrol": patrol, "head": head}
+	return {"name": npc_name, "pos": pos, "weapon": weapon, "loot": loot, "disposition": disposition, "patrol": patrol, "head": head, "hp": DEFAULT_NPC_HP}
 
 
 # ---------------------------------------------------------------- textures
@@ -503,6 +495,8 @@ static func to_dict(d: Dictionary) -> Dictionary:
 		var po := {"type": pr["type"], "pos": [snappedf(pos.x, 0.01), snappedf(pos.y, 0.01)], "scale": pr["scale"], "rot": pr["rot"], "seed": pr["seed"]}
 		if str(pr.get("loot", "none")) != "none":
 			po["loot"] = pr["loot"]  # only written when set, so ordinary props stay compact
+		if bool(pr.get("locked", false)):
+			po["locked"] = true
 		out["props"].append(po)
 	for l in d["lights"]:
 		var lp: Vector2 = l["pos"]
@@ -510,11 +504,36 @@ static func to_dict(d: Dictionary) -> Dictionary:
 		out["lights"].append({"pos": [lp.x, lp.y], "radius": l["radius"], "color": lc.to_html(false), "energy": l["energy"], "flicker": l["flicker"]})
 	for n in d.get("npcs", []):
 		var np: Vector2 = n["pos"]
-		out["npcs"].append({"name": n["name"], "pos": [snappedf(np.x, 0.01), snappedf(np.y, 0.01)], "weapon": n["weapon"], "loot": n["loot"], "disposition": n["disposition"], "patrol": _pack(n["patrol"]), "head": n.get("head", -1)})
+		var no := {"name": n["name"], "pos": [snappedf(np.x, 0.01), snappedf(np.y, 0.01)], "weapon": n["weapon"], "loot": n["loot"], "disposition": n["disposition"], "patrol": _pack(n["patrol"]), "head": n.get("head", -1)}
+		if int(n.get("hp", DEFAULT_NPC_HP)) != DEFAULT_NPC_HP:
+			no["hp"] = int(n["hp"])  # only written when changed from the default
+		if bool(n.get("bounty", false)):
+			no["bounty"] = true  # only written when set
+		out["npcs"].append(no)
 	for o in d.get("openings", []):
 		var op: Vector2 = o["pos"]
 		out["openings"].append({"kind": o["kind"], "pos": [snappedf(op.x, 0.01), snappedf(op.y, 0.01)], "rot": snappedf(float(o["rot"]), 0.0001), "width": o["width"], "thick": o["thick"]})
+	# Editor groups: "group" id (> 0) on any object, only written when set.
+	for key in GROUPABLE:
+		var src: Array = d.get(key, [])
+		var dst: Array = out[key]
+		for i in mini(src.size(), dst.size()):
+			var g := int(src[i].get("group", 0))
+			if g > 0:
+				dst[i]["group"] = g
 	return out
+
+
+## Object lists that can be grouped in the editor (each object may carry "group": int > 0).
+const GROUPABLE := ["polygons", "roofs", "walls", "props", "lights", "npcs", "openings"]
+
+
+## Reads "group" ids back onto loaded objects. `src` and `dst` must line up one to one.
+static func _load_groups(src: Array, dst: Array) -> void:
+	for i in mini(src.size(), dst.size()):
+		var g := int(src[i].get("group", 0)) if src[i] is Dictionary else 0
+		if g > 0:
+			dst[i]["group"] = g
 
 
 static func from_dict(j: Dictionary) -> Dictionary:
@@ -531,9 +550,13 @@ static func from_dict(j: Dictionary) -> Dictionary:
 	for w in j.get("walls", []):
 		d["walls"].append(new_wall(_unpack(w.get("points", [])), bool(w.get("closed", false)), float(w.get("width", 12.0)), str(w.get("style", "wall"))))
 	for pr in j.get("props", []):
+		if not PROPS.has(str(pr.get("type", "tree"))):
+			continue  # prop type no longer exists (e.g. removed horses / cattle): drop it
 		var ploot := str(pr.get("loot", "none"))
 		d["props"].append(new_prop(str(pr.get("type", "tree")), _v2(pr.get("pos"), Vector2.ZERO), float(pr.get("scale", 1.0)), float(pr.get("rot", 0.0)), int(pr.get("seed", 0)),
-				ploot if NPC_LOOT.has(ploot) else "none"))
+				clean_loot(ploot), bool(pr.get("locked", false))))
+		if int(pr.get("group", 0)) > 0:  # read here: skipped props would break a by-index match
+			d["props"][d["props"].size() - 1]["group"] = int(pr["group"])
 	for l in j.get("lights", []):
 		d["lights"].append(new_light(_v2(l.get("pos"), Vector2.ZERO), float(l.get("radius", 300.0)), Color(str(l.get("color", "ffbf73"))), float(l.get("energy", 1.0)), bool(l.get("flicker", false))))
 	for n in j.get("npcs", []):
@@ -542,14 +565,20 @@ static func from_dict(j: Dictionary) -> Dictionary:
 		var disp := str(n.get("disposition", "friendly"))
 		d["npcs"].append(new_npc(str(n.get("name", "NPC")), _v2(n.get("pos"), Vector2.ZERO),
 				weapon if NPC_WEAPONS.has(weapon) else "none",
-				loot if NPC_LOOT.has(loot) else "none",
+				clean_loot(loot),
 				disp if NPC_DISPOSITIONS.has(disp) else "friendly",
 				_unpack(n.get("patrol", [])), int(n.get("head", -1))))
+		d["npcs"][d["npcs"].size() - 1]["hp"] = clampi(int(n.get("hp", DEFAULT_NPC_HP)), 1, 9999)
+		if bool(n.get("bounty", false)) and disp == "hostile":
+			d["npcs"][d["npcs"].size() - 1]["bounty"] = true
 	for o in j.get("openings", []):
 		var kind := str(o.get("kind", "door"))
 		if not OPENING_KINDS.has(kind):
 			kind = "door"
 		d["openings"].append(new_opening(kind, _v2(o.get("pos"), Vector2.ZERO), float(o.get("rot", 0.0)), float(o.get("width", OPENING_KINDS[kind][1])), float(o.get("thick", 12.0))))
+	for key in GROUPABLE:
+		if key != "props":
+			_load_groups(j.get(key, []), d[key])
 	return d
 
 

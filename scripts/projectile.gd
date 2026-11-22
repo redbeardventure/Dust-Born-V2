@@ -18,9 +18,11 @@ var _travelled := 0.0
 
 ## Fires one shot of `weapon` (a key in Weapons.RANGED) into `parent`: a single projectile,
 ## or `pellets` projectiles fanned out within the spread (shotgun).
-static func fire(parent: Node, weapon: String, from: Vector2, dir: Vector2, by: Node) -> void:
+## The multipliers adjust one shot (e.g. the Aimed Shot combat card: no spread, more damage and reach).
+static func fire(parent: Node, weapon: String, from: Vector2, dir: Vector2, by: Node,
+		spread_mul: float = 1.0, damage_mul: float = 1.0, range_mul: float = 1.0) -> void:
 	var w: Dictionary = Weapons.RANGED[weapon]
-	var spread: float = w["spread"]
+	var spread: float = float(w["spread"]) * spread_mul
 	var speed: float = w["speed"]
 	for i in int(w.get("pellets", 1)):
 		var p := Projectile.new()
@@ -28,8 +30,8 @@ static func fire(parent: Node, weapon: String, from: Vector2, dir: Vector2, by: 
 		# Pellets also vary a little in speed so the pattern spreads out along its path.
 		var v := speed * (randf_range(0.9, 1.1) if p.kind == "pellet" else 1.0)
 		p.velocity = dir.normalized().rotated(randf_range(-spread, spread)) * v
-		p.damage = int(w["damage"])
-		p.max_range = float(w["range"]) * (randf_range(0.85, 1.0) if p.kind == "pellet" else 1.0)
+		p.damage = roundi(float(w["damage"]) * damage_mul)
+		p.max_range = float(w["range"]) * range_mul * (randf_range(0.85, 1.0) if p.kind == "pellet" else 1.0)
 		p.shooter = by
 		p.position = from + dir.normalized() * 14.0
 		p.rotation = p.velocity.angle()

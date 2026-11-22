@@ -335,7 +335,7 @@ static func create_wagon() -> Dictionary:
 		# [angle round the ring, canvas cover (ROOFS key, "" = open wagon), cargo [kind, x, y, loot]]
 		# Cargo sits along the sides (x = +/-24) so a walkway stays clear down the middle.
 		[-PI * 0.5, "roof_canvas", [["barrel", -25, 30, "none"], ["sacks", 25, 42], ["trunk", 25, -20, "gold"], ["wagon_lantern", 0, 0]]],
-		[-PI * 0.1, "roof_canvas_blue", [["crate", -24, 34, "ammo"], ["crate", 24, 34], ["bedroll", -24, -16], ["barrel", 26, -16]]],
+		[-PI * 0.1, "roof_canvas_blue", [["crate", -24, 34, "pistol"], ["crate", 24, 34], ["bedroll", -24, -16], ["barrel", 26, -16]]],
 		[PI * 0.3, "roof_canvas_dark", [["sacks", -25, 30], ["barrel", 25, 32, "food"], ["trunk", -25, -22, "gems"], ["wagon_lantern", 10, 0]]],
 		[PI * 0.75, "", [["crate", -24, -20, "potion"], ["crate", 24, -20], ["barrel", -25, 30], ["sacks", 25, 34], ["haybale", 0, 6]]],
 		[PI * 1.2, "roof_canvas", [["bedroll", -24, 10], ["bedroll", 24, 10], ["crate", 24, -40, "gems"], ["wagon_lantern", 0, 40]]],
@@ -365,7 +365,7 @@ static func create_wagon() -> Dictionary:
 	d["polygons"].append(MapData.new_poly("water", SampleMap._organic(SampleMap._blob(pond, 120, rng, 10), rng, 10.0, 3)))
 
 	# A couple of hostile riders watching the camp from the trail.
-	d["npcs"].append(MapData.new_npc("Outlaw", Vector2(600, 330), "rifle", "ammo", "hostile"))
+	d["npcs"].append(MapData.new_npc("Outlaw", Vector2(600, 330), "rifle", "rifle", "hostile"))
 	d["npcs"].append(MapData.new_npc("Outlaw", Vector2(1450, 280), "shotgun", "gold", "hostile"))
 	d["npcs"].append(MapData.new_npc("Trail boss", fire + Vector2(60, 120), "pistol", "none", "friendly"))
 
