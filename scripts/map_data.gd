@@ -10,6 +10,7 @@ extends RefCounted
 ##   lights:   [{pos, radius, color, energy, flicker}]
 ##   npcs:     [{name, pos, weapon, loot, disposition, patrol: PackedVector2Array, bounty?: bool}]
 ##             (bounty only on hostile NPCs: killing every bounty wins the play-test)
+##             guard?: bool, guard_dir?: float degrees (0 = east, 90 = south): stands and faces that way
 ##   openings: [{kind: "door"|"window", pos, rot, width, thick}]   (sit in a wall; the wall is cut open there)
 ##   roofs:    [{type (key of ROOFS), points: PackedVector2Array}]   (drawn above everything)
 ## NOTE: packed arrays are never mutated in place, only replaced, so undo snapshots stay valid.
@@ -22,6 +23,16 @@ const DEFAULT_SIZE := Vector2(2048, 1728)
 static var working: Dictionary = {}
 static var current_path: String = DEFAULT_PATH
 static var _tex_cache: Dictionary = {}
+
+## Multiplier for the automatic drop shadows (props, walls, roofs, doors, rails). 1.0 = default look.
+static var shadow_strength: float = 1.0
+const SHADOW_MAX := 2.5
+
+
+## Black drop-shadow colour with the given base alpha, scaled by shadow_strength.
+static func shadow_color(alpha: float) -> Color:
+	return Color(0, 0, 0, clampf(alpha * shadow_strength, 0.0, 1.0))
+
 
 ## Roof coverings for the roof layer. Same fields as TERRAIN (get_texture reads either table),
 ## kept separate so they don't show up in the terrain dropdown.
@@ -190,54 +201,68 @@ const WALL_STYLE_ORDER := ["wall", "hull", "rail", "wagon"]
 
 ## radius = selection/footprint size, solid = collision radius (0 = walk-through)
 static var PROPS: Dictionary = {
-	"tree": {"label": "Tree", "radius": 56.0, "solid": 8.0, "fade": true},
-	"bush": {"label": "Bush", "radius": 26.0, "solid": 0.0},
+	"tree": {"defence": 0.30, "label": "Tree", "radius": 56.0, "solid": 8.0, "fade": true},
+	"bush": {"defence": 0.25, "low": true, "label": "Bush", "radius": 26.0, "solid": 0.0},
 	# rect = rectangular collision/shadow footprint (local, before rotation); fade = drawn above the player and fades when covering them
-	"locomotive": {"label": "Locomotive", "radius": 220.0, "solid": 0.0, "rect": Vector2(150, 430)},
-	"coal_car": {"label": "Coal tender", "radius": 100.0, "solid": 0.0, "rect": Vector2(190, 190)},
+	"locomotive": {"defence": 0.90, "label": "Locomotive", "radius": 220.0, "solid": 0.0, "rect": Vector2(150, 430)},
+	"coal_car": {"defence": 0.80, "label": "Coal tender", "radius": 100.0, "solid": 0.0, "rect": Vector2(190, 190)},
 	"smoke": {"label": "Smoke (overhead)", "radius": 90.0, "solid": 0.0, "fade": true},
-	"bench": {"label": "Train bench", "radius": 38.0, "solid": 0.0, "rect": Vector2(70, 28)},
+	"bench": {"defence": 0.30, "low": true, "label": "Train bench", "radius": 38.0, "solid": 0.0, "rect": Vector2(70, 28)},
 	"window": {"label": "Window", "radius": 24.0, "solid": 0.0},
-	"rock": {"label": "Rock", "radius": 34.0, "solid": 28.0},
-	"barrel": {"label": "Barrel", "radius": 14.0, "solid": 12.0},
-	"crate": {"label": "Crate", "radius": 18.0, "solid": 16.0},
-	"table": {"label": "Table", "radius": 40.0, "solid": 30.0},
-	"well": {"label": "Well", "radius": 36.0, "solid": 34.0},
+	"rock": {"defence": 0.60, "label": "Rock", "radius": 34.0, "solid": 28.0},
+	"barrel": {"defence": 0.35, "low": true, "label": "Barrel", "radius": 14.0, "solid": 12.0},
+	"crate": {"defence": 0.50, "low": true, "label": "Crate", "radius": 18.0, "solid": 16.0},
+	"table": {"defence": 0.40, "low": true, "label": "Table", "radius": 40.0, "solid": 30.0},
+	"well": {"defence": 0.70, "label": "Well", "radius": 36.0, "solid": 34.0},
 	# light = {r: radius, c: color, e: energy}; props with it emit a flickering light
 	"torch": {"label": "Torch (light)", "radius": 10.0, "solid": 0.0, "light": {"r": 240.0, "c": Color(1.0, 0.62, 0.3), "e": 1.1}},
 	# desert
 	"cactus": {"label": "Cactus", "radius": 24.0, "solid": 10.0},
-	"palm": {"label": "Palm tree", "radius": 64.0, "solid": 8.0, "fade": true},
-	"pillar": {"label": "Stone pillar", "radius": 26.0, "solid": 21.0},
-	"broken_pillar": {"label": "Broken pillar", "radius": 24.0, "solid": 18.0},
-	"rubble": {"label": "Rubble", "radius": 28.0, "solid": 0.0},
+	"palm": {"defence": 0.25, "label": "Palm tree", "radius": 64.0, "solid": 8.0, "fade": true},
+	"pillar": {"defence": 0.70, "label": "Stone pillar", "radius": 26.0, "solid": 21.0},
+	"broken_pillar": {"defence": 0.50, "label": "Broken pillar", "radius": 24.0, "solid": 18.0},
+	"rubble": {"defence": 0.35, "low": true, "label": "Rubble", "radius": 28.0, "solid": 0.0},
 	# snow
-	"pine": {"label": "Pine tree", "radius": 52.0, "solid": 8.0, "fade": true},
-	"snowdrift": {"label": "Snowdrift", "radius": 34.0, "solid": 0.0},
-	"snowman": {"label": "Snowman", "radius": 20.0, "solid": 14.0},
+	"pine": {"defence": 0.30, "label": "Pine tree", "radius": 52.0, "solid": 8.0, "fade": true},
+	"snowdrift": {"defence": 0.30, "low": true, "label": "Snowdrift", "radius": 34.0, "solid": 0.0},
+	"snowman": {"defence": 0.20, "label": "Snowman", "radius": 20.0, "solid": 14.0},
 	"campfire": {"label": "Campfire (light)", "radius": 24.0, "solid": 0.0, "light": {"r": 300.0, "c": Color(1.0, 0.55, 0.2), "e": 1.2}},
-	"stump": {"label": "Tree stump", "radius": 18.0, "solid": 14.0, "no_shadow": true},
+	"stump": {"defence": 0.30, "low": true, "label": "Tree stump", "radius": 18.0, "solid": 14.0, "no_shadow": true},
 	# town
-	"stall": {"label": "Market stall", "radius": 52.0, "solid": 0.0, "rect": Vector2(96, 64)},
-	"fountain": {"label": "Fountain", "radius": 52.0, "solid": 46.0},
+	"stall": {"defence": 0.30, "label": "Market stall", "radius": 52.0, "solid": 0.0, "rect": Vector2(96, 64)},
+	"fountain": {"defence": 0.70, "label": "Fountain", "radius": 52.0, "solid": 46.0},
 	"lamppost": {"label": "Lamppost (light)", "radius": 12.0, "solid": 6.0, "light": {"r": 300.0, "c": Color(1.0, 0.85, 0.5), "e": 1.0}},
-	"cart": {"label": "Cart", "radius": 46.0, "solid": 0.0, "rect": Vector2(84, 52)},
-	"haybale": {"label": "Hay bale", "radius": 24.0, "solid": 18.0},
+	"cart": {"defence": 0.40, "low": true, "label": "Cart", "radius": 46.0, "solid": 0.0, "rect": Vector2(84, 52)},
+	"haybale": {"defence": 0.45, "low": true, "label": "Hay bale", "radius": 24.0, "solid": 18.0},
 	# swamp
-	"dead_tree": {"label": "Dead tree", "radius": 48.0, "solid": 7.0, "fade": true},
+	"dead_tree": {"defence": 0.25, "label": "Dead tree", "radius": 48.0, "solid": 7.0, "fade": true},
 	"reeds": {"label": "Reeds", "radius": 28.0, "solid": 0.0},
 	"lilypad": {"label": "Lily pads", "radius": 24.0, "solid": 0.0},
 	"mushroom": {"label": "Mushrooms", "radius": 16.0, "solid": 0.0},
 	"wisp": {"label": "Will-o-wisp (light)", "radius": 14.0, "solid": 0.0, "light": {"r": 220.0, "c": Color(0.5, 1.0, 0.8), "e": 1.0}},
 	# covered wagon (parts are drawn with the wagon's length running along local y; hitch points to -y)
-	"wagon_wheel": {"label": "Wagon wheel (hub faces +x)", "radius": 24.0, "solid": 0.0, "rect": Vector2(10, 46)},
+	"wagon_wheel": {"defence": 0.30, "label": "Wagon wheel (hub faces +x)", "radius": 24.0, "solid": 0.0, "rect": Vector2(10, 46)},
 	"wagon_hitch": {"label": "Wagon hitch (tongue + crossbars)", "radius": 60.0, "solid": 0.0},
 	"wagon_seat": {"label": "Wagon driver's seat", "radius": 34.0, "solid": 0.0},
-	"trunk": {"label": "Travel trunk", "radius": 18.0, "solid": 0.0, "rect": Vector2(32, 22)},
+	"trunk": {"defence": 0.45, "low": true, "label": "Travel trunk", "radius": 18.0, "solid": 0.0, "rect": Vector2(32, 22)},
 	"bedroll": {"label": "Bedroll", "radius": 26.0, "solid": 0.0},
-	"sacks": {"label": "Grain sacks", "radius": 18.0, "solid": 12.0},
+	"sacks": {"defence": 0.40, "low": true, "label": "Grain sacks", "radius": 18.0, "solid": 12.0},
 	"wagon_lantern": {"label": "Wagon lantern (light)", "radius": 10.0, "solid": 0.0, "light": {"r": 230.0, "c": Color(1.0, 0.78, 0.45), "e": 1.0}},
 }
+
+
+## Defence score of a prop type: the chance (0..1) that a shot at someone crouching behind it
+## is soaked up by the prop. 0 = no cover. Set with the "defence" key in PROPS.
+static func prop_defence(kind: String) -> float:
+	return float(PROPS.get(kind, {}).get("defence", 0.0))
+
+
+## Radius (px, unscaled) of a round prop's body: how far from its centre cover starts.
+## Rectangular props use PropNode.edge_distance() instead.
+static func prop_body_radius(kind: String) -> float:
+	var def: Dictionary = PROPS.get(kind, {})
+	var solid := float(def.get("solid", 0.0))
+	return solid if solid > 0.0 else float(def.get("radius", 20.0)) * 0.6
 
 
 ## NPC option lists (key -> label). Order is the dropdown order.
@@ -509,6 +534,9 @@ static func to_dict(d: Dictionary) -> Dictionary:
 			no["hp"] = int(n["hp"])  # only written when changed from the default
 		if bool(n.get("bounty", false)):
 			no["bounty"] = true  # only written when set
+		if bool(n.get("guard", false)):
+			no["guard"] = true  # only written when set
+			no["guard_dir"] = snappedf(float(n.get("guard_dir", 90.0)), 0.1)
 		out["npcs"].append(no)
 	for o in d.get("openings", []):
 		var op: Vector2 = o["pos"]
@@ -571,6 +599,9 @@ static func from_dict(j: Dictionary) -> Dictionary:
 		d["npcs"][d["npcs"].size() - 1]["hp"] = clampi(int(n.get("hp", DEFAULT_NPC_HP)), 1, 9999)
 		if bool(n.get("bounty", false)) and disp == "hostile":
 			d["npcs"][d["npcs"].size() - 1]["bounty"] = true
+		if bool(n.get("guard", false)):
+			d["npcs"][d["npcs"].size() - 1]["guard"] = true
+			d["npcs"][d["npcs"].size() - 1]["guard_dir"] = fposmod(float(n.get("guard_dir", 90.0)), 360.0)
 	for o in j.get("openings", []):
 		var kind := str(o.get("kind", "door"))
 		if not OPENING_KINDS.has(kind):

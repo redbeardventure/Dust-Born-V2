@@ -125,6 +125,11 @@ var npc_head_opt: OptionButton
 var npc_loot_opt: OptionButton
 var npc_disp_opt: OptionButton
 var npc_bounty_check: CheckBox
+var npc_guard_check: CheckBox
+var npc_guard_dir_box: HBoxContainer   # "Facing" compass + label, shown only for guards
+var npc_guard_compass: Control
+var npc_guard_dir_lbl: Label
+var npc_guard_dir := 90.0  # degrees, 0 = east, 90 = south (screen y points down)
 var npc_hp_spin: SpinBox
 var patrol_btn: Button
 var clear_patrol_btn: Button
@@ -735,6 +740,29 @@ func _build_npc_bar() -> void:
 	npc_bounty_check.tooltip_text = "Wanted outlaw (hostile only). The play-test is won once every bounty is killed."
 	patrol_btn = _button(row2, "Draw patrol area", _start_patrol_draw)
 	clear_patrol_btn = _button(row2, "Clear patrol", _clear_patrol)
+	# Guard: stands at its post facing one direction (picked on the compass that appears).
+	npc_guard_check = _check(row1, "Guard", false, func(_on: bool) -> void:
+		_sync_guard_ui()
+		_on_npc_changed())
+	npc_guard_check.tooltip_text = "Guard: doesn't patrol or look around; keeps facing the direction set on the compass"
+	npc_guard_dir_box = HBoxContainer.new()
+	npc_guard_dir_box.add_theme_constant_override("separation", 4)
+	npc_guard_dir_box.visible = false
+	row1.add_child(npc_guard_dir_box)
+	var facing_lbl := Label.new()
+	facing_lbl.text = "Facing"
+	npc_guard_dir_box.add_child(facing_lbl)
+	npc_guard_compass = Control.new()
+	npc_guard_compass.custom_minimum_size = Vector2(36, 36)
+	npc_guard_compass.tooltip_text = "Click or drag to set the guard's direction (15° steps)"
+	npc_guard_compass.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	npc_guard_compass.draw.connect(_draw_guard_compass)
+	npc_guard_compass.gui_input.connect(_on_guard_compass_input)
+	npc_guard_dir_box.add_child(npc_guard_compass)
+	npc_guard_dir_lbl = Label.new()
+	npc_guard_dir_lbl.custom_minimum_size.x = 64
+	npc_guard_dir_box.add_child(npc_guard_dir_lbl)
+	_update_guard_dir_label()
 
 
 ## Wall style / width / auto-walls bar. Shown while a wall is selected or a tool that creates walls is active.
@@ -1341,6 +1369,10 @@ func _sync_ui() -> void:
 			npc_head_opt.select(clampi(int(n.get("head", -1)) + 1, 0, HeadArt.count()))
 			npc_bounty_check.set_pressed_no_signal(bool(n.get("bounty", false)))
 			npc_hp_spin.set_value_no_signal(int(n.get("hp", MapData.DEFAULT_NPC_HP)))
+			npc_guard_check.set_pressed_no_signal(bool(n.get("guard", false)))
+			npc_guard_dir = float(n.get("guard_dir", 90.0))
+			_update_guard_dir_label()
+			_sync_guard_ui()
 			_sync_bounty_check()
 		"opening":
 			var o: Dictionary = data["openings"][sel_idx]
@@ -1615,8 +1647,64 @@ func _on_npc_changed() -> void:
 	n["head"] = npc_head_opt.selected - 1
 	n["hp"] = int(npc_hp_spin.value)
 	n["bounty"] = npc_bounty_check.button_pressed and n["disposition"] == "hostile"
+	n["guard"] = npc_guard_check.button_pressed
+	n["guard_dir"] = npc_guard_dir
 	_sync_bounty_check()
 	renderer.rebuild_npcs()
+
+
+func _sync_guard_ui() -> void:
+	if npc_guard_dir_box != null:
+		npc_guard_dir_box.visible = npc_guard_check.button_pressed
+
+
+const COMPASS_NAMES := ["E", "SE", "S", "SW", "W", "NW", "N", "NE"]
+
+func _update_guard_dir_label() -> void:
+	if npc_guard_dir_lbl != null:
+		npc_guard_dir_lbl.text = "%d° %s" % [roundi(npc_guard_dir), COMPASS_NAMES[int(round(npc_guard_dir / 45.0)) % 8]]
+	if npc_guard_compass != null:
+		npc_guard_compass.queue_redraw()
+
+
+## The little compass next to "Guard": a ring with N/E/S/W ticks and an arrow pointing the way
+## the guard faces (screen directions: up = north).
+func _draw_guard_compass() -> void:
+	var c := npc_guard_compass.size * 0.5
+	var r := minf(c.x, c.y) - 2.0
+	npc_guard_compass.draw_circle(c, r, Color(0.12, 0.12, 0.14))
+	npc_guard_compass.draw_arc(c, r, 0.0, TAU, 32, Color(0.7, 0.7, 0.7), 1.5)
+	for k in 8:
+		var d := Vector2.from_angle(TAU * float(k) / 8.0)
+		var inner := r - (5.0 if k % 2 == 0 else 3.0)
+		npc_guard_compass.draw_line(c + d * inner, c + d * r, Color(0.7, 0.7, 0.7), 1.0)
+	npc_guard_compass.draw_string(ThemeDB.fallback_font, c + Vector2(-4, -r + 10), "N",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(0.85, 0.85, 0.85))
+	var dir := Vector2.from_angle(deg_to_rad(npc_guard_dir))
+	var tip := c + dir * (r - 3.0)
+	var col := Color(1.0, 0.8, 0.25)
+	npc_guard_compass.draw_line(c, tip, col, 2.5)
+	npc_guard_compass.draw_colored_polygon(PackedVector2Array([
+			tip + dir * 2.0, tip - dir * 6.0 + dir.orthogonal() * 4.0, tip - dir * 6.0 - dir.orthogonal() * 4.0]), col)
+	npc_guard_compass.draw_circle(c, 2.5, col)
+
+
+func _on_guard_compass_input(event: InputEvent) -> void:
+	var pressed := event is InputEventMouseButton and (event as InputEventMouseButton).pressed \
+			and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT
+	var dragged := event is InputEventMouseMotion and ((event as InputEventMouseMotion).button_mask & MOUSE_BUTTON_MASK_LEFT) != 0
+	if not (pressed or dragged):
+		return
+	var to: Vector2 = (event as InputEventMouse).position - npc_guard_compass.size * 0.5
+	if to.length() < 3.0:
+		return
+	var deg := fposmod(snappedf(rad_to_deg(to.angle()), 15.0), 360.0)
+	npc_guard_compass.accept_event()
+	if is_equal_approx(deg, npc_guard_dir):
+		return
+	npc_guard_dir = deg
+	_update_guard_dir_label()
+	_on_npc_changed()
 
 
 ## The Bounty box only applies to hostile NPCs: it's disabled (and cleared) for other attitudes.
@@ -2120,6 +2208,9 @@ func _place_npc(p: Vector2) -> void:
 	var placed: Dictionary = data["npcs"][data["npcs"].size() - 1]
 	placed["hp"] = int(npc_hp_spin.value)
 	placed["bounty"] = npc_bounty_check.button_pressed and placed["disposition"] == "hostile"
+	if npc_guard_check.button_pressed:
+		placed["guard"] = true
+		placed["guard_dir"] = npc_guard_dir
 	renderer.rebuild_npcs()
 	_select("npc", data["npcs"].size() - 1)
 

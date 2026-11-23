@@ -12,12 +12,17 @@ var target_label: Label
 var interact_label: Label
 var message_label: Label
 var shoot_btn: Button
+var reload_btn: Button
 var weapon_btn: Button
 var weapon_icon: Control
 var _wheel_layer: CanvasLayer
 var untarget_btn: Button
+var fight_btn: Button
+var skip_btn: Button
+var end_combat_btn: Button
 var combat: Combat
 var combat_panel: PanelContainer
+var combat_border: Panel
 var combat_title: Label
 var combat_list: VBoxContainer
 var combat_status: Label
@@ -41,6 +46,8 @@ var cards: Array = []  # ActionCard nodes
 var _last_card := ""  # kind of the card played this turn (for its USED stamp)
 var ammo_icons: Control
 const AMMO_SCALE := 2.0  # how much bigger the ammo graphic is drawn than its 22 px design
+const PROFILE_SIZE := 80.0  # profile picture button in the top-left corner
+const HUD_X := 12.0 + PROFILE_SIZE + 8.0  # health, ammo and info lines start right of the profile picture
 var door_buttons := {}  # "Open" / "Kick" / "Close" -> Button
 var _msg_time := 0.0
 
@@ -52,6 +59,17 @@ func _process(delta: float) -> void:
 	_update_ammo()
 	_update_combat_status()
 	_update_combat_cards()
+	if fight_btn != null:
+		fight_btn.disabled = combat == null or combat.active
+	if end_combat_btn != null:
+		end_combat_btn.visible = combat != null and combat.active
+		var can_end := combat != null and combat.can_player_end()
+		end_combat_btn.disabled = not can_end
+		end_combat_btn.tooltip_text = "Leave combat (nobody is attacking you)" if can_end \
+				else "Can't leave while an enemy is attacking you"
+	if skip_btn != null:
+		skip_btn.visible = combat != null and combat.active
+		skip_btn.disabled = not (combat != null and combat.is_player_turn() and not player.is_running())
 	if untarget_btn != null:
 		untarget_btn.disabled = not (is_instance_valid(player.target) or is_instance_valid(player.interact))
 	if weapon_icon != null:
@@ -64,15 +82,28 @@ func _process(delta: float) -> void:
 		var can_shoot := is_instance_valid(player.target) and armed and my_go
 		if fists and can_shoot and player.turn_mode and not player.in_punch_reach(player.target):
 			can_shoot = false  # in combat a punch needs the target right next to you
+		var walled: bool = not fists and player.in_wall_cover()
+		if walled:
+			can_shoot = false  # hiding behind a wall: no line to shoot along
 		shoot_btn.text = "Punch" if fists else "Shoot"
 		shoot_btn.disabled = not can_shoot
 		var verb := "Punch" if fists else "Shoot at"
 		shoot_btn.tooltip_text = ("%s the target (hold to keep going)" % verb) if can_shoot else (
 				"Wait for your turn" if not my_go else
+				"Behind a wall: run to another spot to shoot" if walled else
 				"Target an NPC, barrel or crate first" if not is_instance_valid(player.target) else
 				"Move next to the target to punch" if fists else "Pick a gun first")
 		if not can_shoot:
 			player.fire_held = false  # a disabled button never sends button_up
+	if reload_btn != null:
+		var gun := Weapons.is_ranged(Player.weapon)
+		var go := not player.turn_mode or (player.my_turn and player.action_left)
+		var can_reload := gun and go and not player.is_reloading() and player.ammo() < Weapons.mag_size(Player.weapon)
+		reload_btn.disabled = not can_reload
+		reload_btn.tooltip_text = "Reload now%s" % (" (uses your action)" if player.turn_mode else "") if can_reload else (
+				"Pick a gun first" if not gun else
+				"Wait for your turn" if not go else
+				"Already reloading" if player.is_reloading() else "Magazine is full")
 	if _msg_time > 0.0:
 		_msg_time -= delta
 		message_label.modulate.a = clampf(_msg_time / 0.5, 0.0, 1.0)  # fade over the last half second
@@ -276,7 +307,7 @@ func _ready() -> void:
 	add_child(layer)
 	var hint := Label.new()
 	hint.text = "Click: walk there   Right-click: attack toward cursor   Click NPC / barrel / crate: target   Click door / window: go to it"
-	hint.position = Vector2(12, 8)
+	hint.position = Vector2(HUD_X, 8)
 	hint.add_theme_color_override("font_shadow_color", Color.BLACK)
 	hint.add_theme_constant_override("shadow_offset_x", 1)
 	hint.add_theme_constant_override("shadow_offset_y", 1)
@@ -488,6 +519,18 @@ func _show_game_over(why: String) -> void:
 ## d20 initiative roll in turn order with the current turn marked, what you have left this turn,
 ## and an End turn button.
 func _build_combat_panel(layer: CanvasLayer) -> void:
+	# Red frame around the whole screen while turn-based combat is on.
+	combat_border = Panel.new()
+	combat_border.set_anchors_preset(Control.PRESET_FULL_RECT)
+	combat_border.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	combat_border.visible = false
+	var border_style := StyleBoxFlat.new()
+	border_style.bg_color = Color(0, 0, 0, 0)
+	border_style.set_border_width_all(6)
+	border_style.border_color = Color(0.85, 0.15, 0.12, 0.85)
+	combat_border.add_theme_stylebox_override("panel", border_style)
+	layer.add_child(combat_border)
+
 	combat_panel = PanelContainer.new()
 	combat_panel.visible = false
 	# Left edge, below the HP / ammo / target lines.
@@ -576,6 +619,8 @@ func _update_combat_cards() -> void:
 		return
 	var on := combat != null and combat.active
 	card_row.visible = on
+	if combat_border != null:
+		combat_border.visible = on
 	door_prompt.offset_top = -60.0 - (90.0 if on else 0.0)
 	message_label.offset_top = -100.0 - (90.0 if on else 0.0)
 	if not on:
@@ -632,7 +677,11 @@ func _update_combat_status() -> void:
 		var act := "action used"
 		if player.action_left:
 			act = "action ready" if player.extra_actions == 0 else "%d actions ready" % (player.extra_actions + 1)
-		combat_status.text = "Your turn\nmove %d px, %s" % [int(player.move_left), act]
+		if player.is_running():
+			combat_status.text = "Your turn\nrunning..."
+		else:
+			var mv := "click a marked spot to run (uses your turn)" if player.has_spots() else "no cover in reach"
+			combat_status.text = "Your turn\n%s, %s" % [mv, act]
 		end_turn_btn.disabled = false
 	else:
 		combat_status.text = "%s's turn..." % combat.current_name()
@@ -676,6 +725,47 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 			player.shoot_at(player.target.global_position))  # a quick tap still fires once
 	shoot_btn.button_up.connect(func() -> void: player.fire_held = false)
 	col.add_child(shoot_btn)
+
+	# Reload: refills the magazine now. In a fight it uses the turn's action (the Quick Reload card doesn't).
+	reload_btn = Button.new()
+	reload_btn.text = "Reload"
+	reload_btn.focus_mode = Control.FOCUS_NONE
+	reload_btn.custom_minimum_size = Vector2(90, 56)
+	reload_btn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	reload_btn.pressed.connect(func() -> void: player.reload())
+	col.add_child(reload_btn)
+	# Skip turn: shown only in combat; gives up whatever is left of your turn.
+	skip_btn = Button.new()
+	skip_btn.text = "Skip turn"
+	skip_btn.tooltip_text = "Do nothing this turn and pass to the next in the initiative order"
+	skip_btn.focus_mode = Control.FOCUS_NONE
+	skip_btn.custom_minimum_size = Vector2(90, 40)
+	skip_btn.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
+	skip_btn.visible = false
+	skip_btn.pressed.connect(func() -> void:
+		player.fire_held = false
+		combat.end_player_turn())
+	col.add_child(skip_btn)
+	# End combat: shown only in combat; usable only while no enemy is attacking you.
+	end_combat_btn = Button.new()
+	end_combat_btn.text = "End combat"
+	end_combat_btn.focus_mode = Control.FOCUS_NONE
+	end_combat_btn.custom_minimum_size = Vector2(90, 40)
+	end_combat_btn.add_theme_color_override("font_color", Color(0.75, 1.0, 0.75))
+	end_combat_btn.visible = false
+	end_combat_btn.pressed.connect(func() -> void:
+		player.fire_held = false
+		combat.player_end_combat())
+	col.add_child(end_combat_btn)
+	# Start combat yourself: you go first, and keep taking turns while nobody has noticed you.
+	fight_btn = Button.new()
+	fight_btn.text = "Start combat"
+	fight_btn.tooltip_text = "Start a fight on your terms: you act first, and keep acting while no hostile has noticed you (sneak up from behind)"
+	fight_btn.focus_mode = Control.FOCUS_NONE
+	fight_btn.custom_minimum_size = Vector2(90, 40)
+	fight_btn.add_theme_color_override("font_color", Color(1.0, 0.7, 0.4))
+	fight_btn.pressed.connect(func() -> void: combat.start_player_initiated())
+	col.add_child(fight_btn)
 	# Untarget: clears the target (NPC / barrel / crate) and the selected door or window.
 	untarget_btn = Button.new()
 	untarget_btn.text = "Untarget"
@@ -712,7 +802,7 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 ## Player health bar under the controls hint.
 func _build_health_bar(layer: CanvasLayer) -> void:
 	var bar := ProgressBar.new()
-	bar.position = Vector2(12, 34)
+	bar.position = Vector2(HUD_X, 34)
 	bar.custom_minimum_size = Vector2(200, 18)
 	bar.max_value = Player.MAX_HP
 	bar.value = player.hp
@@ -722,31 +812,49 @@ func _build_health_bar(layer: CanvasLayer) -> void:
 	bar.add_theme_stylebox_override("fill", fill)
 	layer.add_child(bar)
 	var txt := Label.new()
-	txt.position = Vector2(220, 32)
+	txt.position = Vector2(HUD_X + 208, 32)
 	txt.text = "HP %d / %d" % [player.hp, Player.MAX_HP]
 	layer.add_child(txt)
+	# Morale bar under the HP bar. Running away from a fight lowers it.
+	var morale_bar := ProgressBar.new()
+	morale_bar.position = Vector2(HUD_X, 56)
+	morale_bar.custom_minimum_size = Vector2(200, 10)
+	morale_bar.max_value = Player.MAX_MORALE
+	morale_bar.value = player.morale
+	morale_bar.show_percentage = false
+	var mfill := StyleBoxFlat.new()
+	mfill.bg_color = Color(0.3, 0.55, 0.95)
+	morale_bar.add_theme_stylebox_override("fill", mfill)
+	layer.add_child(morale_bar)
+	var morale_txt := Label.new()
+	morale_txt.position = Vector2(HUD_X + 208, 50)
+	morale_txt.text = "Morale %d / %d" % [player.morale, Player.MAX_MORALE]
+	layer.add_child(morale_txt)
+	player.morale_changed.connect(func(m: int, max_m: int) -> void:
+		morale_bar.value = m
+		morale_txt.text = "Morale %d / %d" % [m, max_m])
 	# Ammo for the selected weapon, with a reload bar; updated every frame in _process.
 	ammo_label = Label.new()
-	ammo_label.position = Vector2(12, 56)
+	ammo_label.position = Vector2(HUD_X, 70)
 	ammo_label.add_theme_color_override("font_shadow_color", Color.BLACK)
 	ammo_label.add_theme_constant_override("shadow_offset_x", 1)
 	ammo_label.add_theme_constant_override("shadow_offset_y", 1)
 	layer.add_child(ammo_label)
 	target_label = Label.new()
-	target_label.position = Vector2(12, 94)
+	target_label.position = Vector2(HUD_X, 106)
 	target_label.add_theme_color_override("font_shadow_color", Color.BLACK)
 	target_label.add_theme_constant_override("shadow_offset_x", 1)
 	target_label.add_theme_constant_override("shadow_offset_y", 1)
 	layer.add_child(target_label)
 	interact_label = Label.new()
-	interact_label.position = Vector2(12, 116)
+	interact_label.position = Vector2(HUD_X, 126)
 	interact_label.add_theme_color_override("font_color", Color(0.55, 0.92, 1.0))  # cyan, like the selection brackets
 	interact_label.add_theme_color_override("font_shadow_color", Color.BLACK)
 	interact_label.add_theme_constant_override("shadow_offset_x", 1)
 	interact_label.add_theme_constant_override("shadow_offset_y", 1)
 	layer.add_child(interact_label)
 	reload_bar = ProgressBar.new()
-	reload_bar.position = Vector2(12, 80)
+	reload_bar.position = Vector2(HUD_X, 94)
 	reload_bar.custom_minimum_size = Vector2(200, 8)
 	reload_bar.max_value = 1.0
 	reload_bar.step = 0.0
@@ -758,12 +866,12 @@ func _build_health_bar(layer: CanvasLayer) -> void:
 	# Purse: coin icon and total, right of the HP text.
 	var purse_icon := Control.new()
 	purse_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	purse_icon.position = Vector2(330, 33)
+	purse_icon.position = Vector2(HUD_X + 318, 33)
 	purse_icon.custom_minimum_size = Vector2(20, 20)
 	purse_icon.draw.connect(func() -> void: LootDrop.draw_icon(purse_icon, "gold", Vector2(10, 10), 1.0))
 	layer.add_child(purse_icon)
 	var purse := Label.new()
-	purse.position = Vector2(354, 32)
+	purse.position = Vector2(HUD_X + 342, 32)
 	purse.text = "Purse: %d gold" % player.gold
 	purse.add_theme_color_override("font_color", Color(1.0, 0.86, 0.35))
 	purse.add_theme_color_override("font_shadow_color", Color.BLACK)
@@ -778,15 +886,30 @@ func _build_health_bar(layer: CanvasLayer) -> void:
 		txt.text = "HP %d / %d" % [hp, max_hp])
 
 
-## Top-right row of hat buttons; each shows a preview drawn with the same artwork as the player.
+## Profile picture in the top-left corner (the character with the current head and shirt colour).
+## Clicking it opens / closes the profile panel below it: hat and hair choices, and a shirt colour
+## picker. Each head button shows a preview drawn with the same artwork as the player.
 func _build_hat_picker(layer: CanvasLayer) -> void:
+	var profile := Button.new()
+	profile.position = Vector2(12, 8)
+	profile.custom_minimum_size = Vector2(PROFILE_SIZE, PROFILE_SIZE)
+	profile.focus_mode = Control.FOCUS_NONE  # keep arrow keys for walking
+	profile.tooltip_text = "Profile: change hat / hair and shirt colour"
+	layer.add_child(profile)
+	var portrait := Control.new()
+	portrait.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	portrait.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	portrait.clip_contents = true
+	portrait.draw.connect(func() -> void:
+		portrait.draw_rect(Rect2(Vector2(4, 4), portrait.size - Vector2(8, 8)), Color(0.42, 0.33, 0.22))  # dusty ground
+		Player.draw_portrait(portrait, portrait.size * 0.5 + Vector2(0, 4), 2.4))
+	profile.add_child(portrait)
+
 	var panel := PanelContainer.new()
-	panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	panel.offset_left = -8
-	panel.offset_right = -8
-	panel.offset_top = 8
+	panel.position = Vector2(12, 8 + PROFILE_SIZE + 6)
+	panel.visible = false
 	layer.add_child(panel)
+	profile.pressed.connect(func() -> void: panel.visible = not panel.visible)
 	var box := VBoxContainer.new()
 	panel.add_child(box)
 	var title := Label.new()
@@ -811,9 +934,31 @@ func _build_hat_picker(layer: CanvasLayer) -> void:
 		b.add_child(icon)
 		b.pressed.connect(func() -> void:
 			player.set_head(i)
-			title.text = HeadArt.style_name(i))
+			title.text = HeadArt.style_name(i)
+			portrait.queue_redraw())
 		row.add_child(b)
 	title.text = HeadArt.style_name(Player.head_style)
+	# Shirt colour: swatch button that opens Godot's colour picker.
+	var shirt_row := HBoxContainer.new()
+	box.add_child(shirt_row)
+	var shirt_lbl := Label.new()
+	shirt_lbl.text = "Shirt colour"
+	shirt_row.add_child(shirt_lbl)
+	var shirt := ColorPickerButton.new()
+	shirt.focus_mode = Control.FOCUS_NONE
+	shirt.custom_minimum_size = Vector2(80, 28)
+	shirt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	shirt.edit_alpha = false
+	shirt.color = Player.shirt_color
+	shirt.color_changed.connect(func(c: Color) -> void:
+		player.set_shirt_color(c)
+		portrait.queue_redraw())
+	shirt_row.add_child(shirt)
+	var close := Button.new()
+	close.text = "Close"
+	close.focus_mode = Control.FOCUS_NONE
+	close.pressed.connect(func() -> void: panel.visible = false)
+	box.add_child(close)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -821,6 +966,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		match event.keycode:
 			KEY_ESCAPE:
 				get_tree().change_scene_to_file("res://scenes/map_editor.tscn")
+			KEY_F3:  # debug: show / hide NPC field of view
+				NpcNode.show_fov = not NpcNode.show_fov
+				for n in get_tree().get_nodes_in_group("npcs"):
+					(n as Node2D).queue_redraw()
 			KEY_E:
 				_use_door(false)
 			KEY_K:

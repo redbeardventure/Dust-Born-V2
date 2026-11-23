@@ -36,7 +36,7 @@ func _draw() -> void:
 	if p.size() < 2:
 		return
 	# soft bed shadow
-	draw_polyline(p, Color(0, 0, 0, 0.22), width * 1.25, true)
+	draw_polyline(p, MapData.shadow_color(0.22), width * 1.25, true)
 	# sleepers
 	var carry := 0.0
 	for i in p.size() - 1:

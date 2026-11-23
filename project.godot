@@ -10,10 +10,10 @@ config_version=5
 
 [application]
 
-config/name="GameMap"
+config/name="Dustborn - Setting Sun"
 run/main_scene="res://scenes/main_menu.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
-config/icon="res://icon.svg"
+config/icon="res://assets/branding/dustborn_logo.svg"
 
 [display]
 

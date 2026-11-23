@@ -6,6 +6,9 @@ extends Node2D
 
 const HIT_RADIUS := 10.0
 const WORLD_MASK := 1  # walls, props, doors. Water blockers are on layer 2 so shots fly over water.
+## Low props (crates, barrels, tables...) are on layer 4: they block walking but shots fly over them,
+## unless one is the shooter's locked target.
+const LOW_MASK := 8
 
 var kind := "bullet"  # bullet | pellet
 var velocity := Vector2.ZERO
@@ -22,6 +25,9 @@ var _travelled := 0.0
 static func fire(parent: Node, weapon: String, from: Vector2, dir: Vector2, by: Node,
 		spread_mul: float = 1.0, damage_mul: float = 1.0, range_mul: float = 1.0) -> void:
 	var w: Dictionary = Weapons.RANGED[weapon]
+	# Gunshots are loud: hostile NPCs within hearing range join the fight (see Combat.on_shot_heard).
+	if parent != null and parent.is_inside_tree():
+		parent.get_tree().call_group("combat", "on_shot_heard", from, by)
 	var spread: float = float(w["spread"]) * spread_mul
 	var speed: float = w["speed"]
 	for i in int(w.get("pellets", 1)):
@@ -45,13 +51,22 @@ func _physics_process(delta: float) -> void:
 
 	# Walls and other solid world geometry. Character bodies are excluded and handled below.
 	var space := get_world_2d().direct_space_state
-	var q := PhysicsRayQueryParameters2D.create(a, b, WORLD_MASK)
+	var q := PhysicsRayQueryParameters2D.create(a, b, WORLD_MASK | LOW_MASK)
 	var exclude: Array[RID] = []
 	for n in get_tree().get_nodes_in_group("combatants"):
 		if n is CollisionObject2D:
 			exclude.append(n.get_rid())
 	q.exclude = exclude
 	var wall := space.intersect_ray(q)
+	# Fly over low props, except the one the shooter is aiming at.
+	var aimed_at = shooter.get("target") if is_instance_valid(shooter) else null
+	while not wall.is_empty():
+		var col := wall.get("collider") as CollisionObject2D
+		if col == null or (col.collision_layer & LOW_MASK) == 0 or (aimed_at != null and col.get_parent() == aimed_at):
+			break
+		exclude.append(wall["rid"])
+		q.exclude = exclude
+		wall = space.intersect_ray(q)
 	var end: Vector2 = wall["position"] if not wall.is_empty() else b
 
 	# Nearest character along the segment that ends at the wall (if any).

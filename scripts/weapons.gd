@@ -90,7 +90,7 @@ static func icon_texture(key: String) -> Texture2D:
 
 
 ## Choices offered to the player, in button order.
-const PLAYER_CHOICES := ["none", "pistol", "shotgun", "rifle"]
+const PLAYER_CHOICES := ["pistol", "shotgun", "rifle"]  # no melee for now
 
 
 ## How far off (pixels, either side) a bullet can land at the end of the weapon's range;

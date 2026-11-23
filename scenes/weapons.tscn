@@ -1,0 +1,50 @@
+[gd_scene format=3 uid="uid://cplqoelgdqpk3"]
+
+[ext_resource type="Texture2D" uid="uid://bdwemgn1u4fav" path="res://assets/Revolver_.png" id="1_jq0ys"]
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_jq0ys"]
+atlas = ExtResource("1_jq0ys")
+region = Rect2(512, 0, 64, 64)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_wfppc"]
+atlas = ExtResource("1_jq0ys")
+region = Rect2(512, 0, 64, 64)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_ka8gl"]
+atlas = ExtResource("1_jq0ys")
+region = Rect2(448, 0, 64, 64)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_pe4jq"]
+atlas = ExtResource("1_jq0ys")
+region = Rect2(384, 0, 64, 64)
+
+[sub_resource type="SpriteFrames" id="SpriteFrames_u2d4l"]
+animations = [{
+"frames": [{
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_jq0ys")
+}],
+"loop": 1,
+"name": &"holster",
+"speed": 5.0
+}, {
+"frames": [{
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_wfppc")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_ka8gl")
+}, {
+"duration": 1.0,
+"texture": SubResource("AtlasTexture_pe4jq")
+}],
+"loop": 1,
+"name": &"holster draw",
+"speed": 20.0
+}]
+
+[node name="Weapons" type="Node2D" unique_id=1423645150]
+
+[node name="Revolver" type="AnimatedSprite2D" parent="." unique_id=173893803]
+sprite_frames = SubResource("SpriteFrames_u2d4l")
+animation = &"holster draw"

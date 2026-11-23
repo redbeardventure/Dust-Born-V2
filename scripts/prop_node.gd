@@ -57,6 +57,27 @@ func hit_test(p: Vector2) -> bool:
 	return global_position.distance_to(p) < _radius() + 4.0
 
 
+func _ready() -> void:
+	add_to_group("props")
+
+
+## Defence score (0..1) of this prop as cover, see MapData.prop_defence().
+func defence() -> float:
+	return MapData.prop_defence(kind)
+
+
+## Distance from the prop's centre to the edge of its body, going in world direction `dir`.
+func edge_distance(dir: Vector2) -> float:
+	var rect: Vector2 = MapData.PROPS.get(kind, {}).get("rect", Vector2.ZERO)
+	if rect != Vector2.ZERO:
+		var l := dir.rotated(-rotation)
+		var h := rect * 0.5 * scale.x
+		var tx := h.x / absf(l.x) if absf(l.x) > 0.001 else INF
+		var ty := h.y / absf(l.y) if absf(l.y) > 0.001 else INF
+		return minf(tx, ty)
+	return MapData.prop_body_radius(kind) * scale.x
+
+
 ## Where someone coming from `from` should stand to use this prop: just outside it, on their side.
 func approach_point(from: Vector2, gap: float = 18.0) -> Vector2:
 	var d := from - global_position
@@ -251,7 +272,7 @@ func _draw() -> void:
 
 
 func _draw_canopy(rng: RandomNumberGenerator, r: float, clumps: int, base_col: Color, dark: Color, light: Color) -> void:
-	draw_colored_polygon(_blob(r * 1.02, 20, 0.04, rng, _u(Vector2(r * 0.2, r * 0.25))), Color(0, 0, 0, 0.28))
+	draw_colored_polygon(_blob(r * 1.02, 20, 0.04, rng, _u(Vector2(r * 0.2, r * 0.25))), MapData.shadow_color(0.28))
 	var base := _blob(r, 22, 0.08, rng)
 	draw_colored_polygon(base, base_col)
 	for i in clumps:
@@ -267,7 +288,7 @@ func _draw_canopy(rng: RandomNumberGenerator, r: float, clumps: int, base_col: C
 
 func _draw_rock(rng: RandomNumberGenerator) -> void:
 	var r := 34.0
-	draw_colored_polygon(_blob(r * 1.05, 9, 0.1, rng, _u(Vector2(8, 10))), Color(0, 0, 0, 0.3))
+	draw_colored_polygon(_blob(r * 1.05, 9, 0.1, rng, _u(Vector2(8, 10))), MapData.shadow_color(0.3))
 	var base := _blob(r, 9, 0.18, rng)
 	draw_colored_polygon(base, Color("6f7370"))
 	draw_colored_polygon(_blob(r * 0.72, 9, 0.18, rng, _u(Vector2(-5, -6))), Color("a2a8a2"))
@@ -281,7 +302,7 @@ func _draw_rock(rng: RandomNumberGenerator) -> void:
 
 
 func _draw_barrel() -> void:
-	draw_circle(_u(Vector2(3, 4)), 14.0, Color(0, 0, 0, 0.3))
+	draw_circle(_u(Vector2(3, 4)), 14.0, MapData.shadow_color(0.3))
 	draw_circle(Vector2.ZERO, 14.0, Color("5a3a1e"))
 	draw_circle(Vector2.ZERO, 11.0, Color("7a5530"))
 	draw_arc(Vector2.ZERO, 12.5, 0.0, TAU, 24, Color("2d2d2d"), 1.5)
@@ -297,7 +318,7 @@ func _draw_barrel() -> void:
 
 
 func _draw_crate() -> void:
-	draw_rect(Rect2(Vector2(-16, -16) + _u(Vector2(3, 4)), Vector2(32, 32)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(Vector2(-16, -16) + _u(Vector2(3, 4)), Vector2(32, 32)), MapData.shadow_color(0.3))
 	draw_rect(Rect2(-16, -16, 32, 32), Color("7a5530"))
 	draw_rect(Rect2(-16, -16, 32, 32), Color("2b1a0b"), false, 2.0)
 	if _hit_flash > 0.0:
@@ -323,7 +344,7 @@ func _draw_crate() -> void:
 
 
 func _draw_table() -> void:
-	draw_rect(Rect2(Vector2(-40, -22) + _u(Vector2(5, 7)), Vector2(80, 44)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(Vector2(-40, -22) + _u(Vector2(5, 7)), Vector2(80, 44)), MapData.shadow_color(0.3))
 	draw_rect(Rect2(-40, -22, 80, 44), Color("8a6034"))
 	for i in 5:
 		draw_line(Vector2(-40, -22 + i * 11.0), Vector2(40, -22 + i * 11.0), Color("5e4023"), 1.0)
@@ -334,7 +355,7 @@ func _draw_table() -> void:
 
 
 func _draw_well(rng: RandomNumberGenerator) -> void:
-	draw_circle(_u(Vector2(5, 7)), 36.0, Color(0, 0, 0, 0.3))
+	draw_circle(_u(Vector2(5, 7)), 36.0, MapData.shadow_color(0.3))
 	draw_circle(Vector2.ZERO, 36.0, Color("6c6a63"))
 	for i in 14:
 		var a := TAU * float(i) / 14.0
@@ -357,7 +378,7 @@ func _draw_torch() -> void:
 # ---------------------------------------------------------------- train theme
 
 func _draw_bench() -> void:
-	draw_rect(Rect2(Vector2(-35, -14) + _u(Vector2(3, 4)), Vector2(70, 28)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(Vector2(-35, -14) + _u(Vector2(3, 4)), Vector2(70, 28)), MapData.shadow_color(0.3))
 	draw_rect(Rect2(-35, -14, 70, 28), Color("5e4023"))
 	draw_rect(Rect2(-32, -9, 64, 20), Color("b3342f"))
 	draw_rect(Rect2(-32, -9, 64, 20), Color("4d1210"), false, 1.5)
@@ -375,8 +396,8 @@ func _draw_window() -> void:
 func _draw_locomotive() -> void:
 	# Top-down, front (smokestack) points to -Y, cab at +Y. Footprint 150 x 430.
 	var sh := _u(Vector2(8, 10))
-	draw_rect(Rect2(Vector2(-64, -170) + sh, Vector2(128, 262)), Color(0, 0, 0, 0.3))
-	draw_rect(Rect2(Vector2(-75, 88) + sh, Vector2(150, 127)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(Vector2(-64, -170) + sh, Vector2(128, 262)), MapData.shadow_color(0.3))
+	draw_rect(Rect2(Vector2(-75, 88) + sh, Vector2(150, 127)), MapData.shadow_color(0.3))
 	# side rods and running board
 	draw_rect(Rect2(-64, -170, 128, 260), Color("23252b"))
 	for sx in [-1.0, 1.0]:
@@ -416,7 +437,7 @@ func _draw_locomotive() -> void:
 
 
 func _draw_coal_car(rng: RandomNumberGenerator) -> void:
-	draw_rect(Rect2(Vector2(-95, -95) + _u(Vector2(7, 9)), Vector2(190, 190)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(Vector2(-95, -95) + _u(Vector2(7, 9)), Vector2(190, 190)), MapData.shadow_color(0.3))
 	draw_rect(Rect2(-95, -95, 190, 190), Color("9e2433"))
 	draw_rect(Rect2(-95, -95, 190, 190), Color("1c050a"), false, 3.0)
 	draw_rect(Rect2(-76, -76, 152, 152), Color("1f1d22"))
@@ -450,7 +471,7 @@ func _draw_cactus(rng: RandomNumberGenerator) -> void:
 	var light := Color("8fc255")
 	var outline := Color(0.06, 0.14, 0.05, 0.85)
 	# Shadow
-	draw_colored_polygon(_blob(15.0, 14, 0.06, rng, _u(Vector2(5, 6))), Color(0, 0, 0, 0.28))
+	draw_colored_polygon(_blob(15.0, 14, 0.06, rng, _u(Vector2(5, 6))), MapData.shadow_color(0.28))
 	# Arms: layered blobs (dark base, mid tone, offset highlight), like the tree clumps
 	var arms: Array = []
 	for sx in [-1.0, 1.0]:
@@ -484,7 +505,7 @@ func _draw_cactus(rng: RandomNumberGenerator) -> void:
 
 
 func _draw_palm(rng: RandomNumberGenerator) -> void:
-	draw_colored_polygon(_blob(46.0, 16, 0.1, rng, _u(Vector2(12, 16))), Color(0, 0, 0, 0.25))
+	draw_colored_polygon(_blob(46.0, 16, 0.1, rng, _u(Vector2(12, 16))), MapData.shadow_color(0.25))
 	var n := 9
 	var off := rng.randf() * TAU
 	for i in n:
@@ -502,7 +523,7 @@ func _draw_palm(rng: RandomNumberGenerator) -> void:
 
 
 func _draw_pillar() -> void:
-	draw_rect(Rect2(Vector2(-24, -24) + _u(Vector2(5, 7)), Vector2(48, 48)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(Vector2(-24, -24) + _u(Vector2(5, 7)), Vector2(48, 48)), MapData.shadow_color(0.3))
 	draw_rect(Rect2(-24, -24, 48, 48), Color("b2a07c"))
 	draw_rect(Rect2(-24, -24, 48, 48), Color("3d3320"), false, 2.0)
 	draw_circle(Vector2.ZERO, 19.0, Color("cdbc98"))
@@ -514,7 +535,7 @@ func _draw_pillar() -> void:
 
 
 func _draw_broken_pillar(rng: RandomNumberGenerator) -> void:
-	draw_rect(Rect2(Vector2(-22, -22) + _u(Vector2(4, 6)), Vector2(44, 44)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(Vector2(-22, -22) + _u(Vector2(4, 6)), Vector2(44, 44)), MapData.shadow_color(0.3))
 	draw_rect(Rect2(-22, -22, 44, 44), Color("a08e6a"))
 	draw_rect(Rect2(-22, -22, 44, 44), Color("3d3320"), false, 2.0)
 	var stump := PackedVector2Array()
@@ -534,7 +555,7 @@ func _draw_rubble(rng: RandomNumberGenerator) -> void:
 		var a := rng.randf() * TAU
 		var c := Vector2(cos(a), sin(a)) * rng.randf_range(0.0, 20.0)
 		var r := rng.randf_range(5.0, 11.0)
-		draw_colored_polygon(_blob(r, 6, 0.3, rng, c + _u(Vector2(2, 3))), Color(0, 0, 0, 0.25))
+		draw_colored_polygon(_blob(r, 6, 0.3, rng, c + _u(Vector2(2, 3))), MapData.shadow_color(0.25))
 		var blob := _blob(r, 6, 0.3, rng, c)
 		draw_colored_polygon(blob, Color("a8967a").lerp(Color("d0c0a0"), rng.randf()))
 		_outline(blob, Color(0.25, 0.2, 0.12, 0.7), 1.0)
@@ -643,7 +664,7 @@ func _draw_stump() -> void:
 func _draw_stall() -> void:
 	var w := 96.0
 	var h := 64.0
-	draw_rect(Rect2(Vector2(-w * 0.5, -h * 0.5) + _u(Vector2(6, 8)), Vector2(w, h)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(Vector2(-w * 0.5, -h * 0.5) + _u(Vector2(6, 8)), Vector2(w, h)), MapData.shadow_color(0.3))
 	draw_rect(Rect2(-w * 0.5, -h * 0.5, w, h), Color("6a4a2a"))
 	# striped awning
 	var stripes := 8
@@ -657,7 +678,7 @@ func _draw_stall() -> void:
 
 
 func _draw_fountain() -> void:
-	draw_circle(_u(Vector2(6, 8)), 50.0, Color(0, 0, 0, 0.3))
+	draw_circle(_u(Vector2(6, 8)), 50.0, MapData.shadow_color(0.3))
 	draw_circle(Vector2.ZERO, 50.0, Color("8a867c"))
 	draw_circle(Vector2.ZERO, 43.0, Color("b0aa9c"))
 	draw_circle(Vector2.ZERO, 37.0, Color("3f8ea0"))
@@ -674,7 +695,7 @@ func _draw_fountain() -> void:
 func _draw_lamppost() -> void:
 	draw_circle(Vector2.ZERO, 30.0, Color(1.0, 0.8, 0.4, 0.08))
 	draw_circle(Vector2.ZERO, 18.0, Color(1.0, 0.8, 0.4, 0.16))
-	draw_circle(_u(Vector2(2, 3)), 7.0, Color(0, 0, 0, 0.3))
+	draw_circle(_u(Vector2(2, 3)), 7.0, MapData.shadow_color(0.3))
 	draw_circle(Vector2.ZERO, 7.0, Color("23252b"))
 	draw_circle(Vector2.ZERO, 5.0, Color("ffd98a"))
 	draw_circle(Vector2.ZERO, 2.5, Color("fff4c8"))
@@ -684,7 +705,7 @@ func _draw_lamppost() -> void:
 func _draw_cart() -> void:
 	var w := 84.0
 	var h := 52.0
-	draw_rect(Rect2(Vector2(-w * 0.5, -h * 0.5) + _u(Vector2(5, 7)), Vector2(w, h)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(Vector2(-w * 0.5, -h * 0.5) + _u(Vector2(5, 7)), Vector2(w, h)), MapData.shadow_color(0.3))
 	# wheels
 	for sy in [-1.0, 1.0]:
 		draw_rect(Rect2(-14, sy * (h * 0.5) - 5.0, 28, 10), Color("2a1c10"))
@@ -702,7 +723,7 @@ func _draw_cart() -> void:
 
 
 func _draw_haybale(rng: RandomNumberGenerator) -> void:
-	draw_rect(Rect2(Vector2(-22, -15) + _u(Vector2(4, 5)), Vector2(44, 30)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(Vector2(-22, -15) + _u(Vector2(4, 5)), Vector2(44, 30)), MapData.shadow_color(0.3))
 	draw_rect(Rect2(-22, -15, 44, 30), Color("d6b44a"))
 	for i in 14:
 		var x := rng.randf_range(-20, 20)
@@ -722,7 +743,7 @@ func _draw_wagon_wheel() -> void:
 	var w := 10.0
 	var h := 46.0
 	var r := Rect2(-w * 0.5, -h * 0.5, w, h)
-	draw_rect(Rect2(r.position + _u(Vector2(3, 4)), r.size), Color(0, 0, 0, 0.32))
+	draw_rect(Rect2(r.position + _u(Vector2(3, 4)), r.size), MapData.shadow_color(0.32))
 	draw_rect(r, Color("4a3018"))
 	for i in 6:  # spoke ends / felloe joints
 		var y := -h * 0.5 + 4.0 + i * (h - 8.0) / 5.0
@@ -746,8 +767,8 @@ func _draw_wagon_hitch() -> void:
 	var iron := Color("2b2b30")
 	var sh := _u(Vector2(3, 4))
 	# shadow
-	draw_line(Vector2(0, 58) + sh, Vector2(0, -46) + sh, Color(0, 0, 0, 0.3), 6.0)
-	draw_rect(Rect2(Vector2(-36, -50) + sh, Vector2(72, 7)), Color(0, 0, 0, 0.3))
+	draw_line(Vector2(0, 58) + sh, Vector2(0, -46) + sh, MapData.shadow_color(0.3), 6.0)
+	draw_rect(Rect2(Vector2(-36, -50) + sh, Vector2(72, 7)), MapData.shadow_color(0.3))
 	# hounds: diagonal braces from the front axle to the tongue
 	for sx in [-1.0, 1.0]:
 		draw_line(Vector2(sx * 16.0, 58), Vector2(0, 30), dark, 4.0)
@@ -774,7 +795,7 @@ func _draw_wagon_hitch() -> void:
 
 ## Driver's bench across the front of the bed, with a footboard.
 func _draw_wagon_seat() -> void:
-	draw_rect(Rect2(Vector2(-34, -10) + _u(Vector2(2, 3)), Vector2(68, 20)), Color(0, 0, 0, 0.28))
+	draw_rect(Rect2(Vector2(-34, -10) + _u(Vector2(2, 3)), Vector2(68, 20)), MapData.shadow_color(0.28))
 	draw_rect(Rect2(-34, -10, 68, 6), Color("4a3018"))  # footboard
 	draw_rect(Rect2(-30, -4, 60, 12), Color("8f6338"))  # seat plank
 	draw_line(Vector2(-30, 2), Vector2(30, 2), Color("5e4023"), 1.0)
@@ -786,7 +807,7 @@ func _draw_wagon_seat() -> void:
 
 ## Travel trunk: domed wooden chest with iron bands and a brass lock.
 func _draw_trunk() -> void:
-	draw_rect(Rect2(Vector2(-16, -11) + _u(Vector2(3, 4)), Vector2(32, 22)), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(Vector2(-16, -11) + _u(Vector2(3, 4)), Vector2(32, 22)), MapData.shadow_color(0.3))
 	draw_rect(Rect2(-16, -11, 32, 22), Color("6a3f22"))
 	draw_rect(Rect2(-16, -11, 32, 9), Color("84522c"))  # lit side of the domed lid
 	for x in [-9.0, 9.0]:
@@ -808,7 +829,7 @@ func _draw_trunk() -> void:
 func _draw_bedroll(rng: RandomNumberGenerator) -> void:
 	var cols := [Color("7a3a30"), Color("3d5f7a"), Color("5c6b3a"), Color("8a6a3a")]
 	var c: Color = cols[rng.randi() % cols.size()]
-	draw_rect(Rect2(Vector2(-14, -26) + _u(Vector2(2, 3)), Vector2(28, 52)), Color(0, 0, 0, 0.22))
+	draw_rect(Rect2(Vector2(-14, -26) + _u(Vector2(2, 3)), Vector2(28, 52)), MapData.shadow_color(0.22))
 	draw_rect(Rect2(-14, -26, 28, 52), c)
 	draw_rect(Rect2(-14, -6, 28, 32), c.darkened(0.15))  # folded-back top blanket
 	for y in [-2.0, 10.0, 22.0]:
@@ -824,7 +845,7 @@ func _draw_sacks(rng: RandomNumberGenerator) -> void:
 	for i in n:
 		var p := Vector2(-7.0 + i * 8.0, rng.randf_range(-5.0, 5.0))
 		var r := rng.randf_range(8.0, 10.0)
-		draw_circle(p + _u(Vector2(2, 3)), r, Color(0, 0, 0, 0.25))
+		draw_circle(p + _u(Vector2(2, 3)), r, MapData.shadow_color(0.25))
 		draw_circle(p, r, Color("b39a6a"))
 		draw_circle(p + _u(Vector2(-2, -2)), r * 0.55, Color("c9b282"))
 		draw_arc(p, r, 0.0, TAU, 16, Color("6e5a36"), 1.2)
@@ -836,7 +857,7 @@ func _draw_sacks(rng: RandomNumberGenerator) -> void:
 func _draw_wagon_lantern() -> void:
 	draw_circle(Vector2.ZERO, 22.0, Color(1.0, 0.8, 0.45, 0.07))
 	draw_circle(Vector2.ZERO, 12.0, Color(1.0, 0.8, 0.45, 0.15))
-	draw_circle(_u(Vector2(2, 3)), 6.0, Color(0, 0, 0, 0.3))
+	draw_circle(_u(Vector2(2, 3)), 6.0, MapData.shadow_color(0.3))
 	draw_rect(Rect2(-5, -5, 10, 10), Color("2b2b30"))
 	draw_rect(Rect2(-3.5, -3.5, 7, 7), Color("ffd27a"))
 	draw_circle(Vector2.ZERO, 1.8, Color("fff4c8"))
@@ -848,7 +869,7 @@ func _draw_wagon_lantern() -> void:
 # ---------------------------------------------------------------- swamp theme
 
 func _draw_dead_tree(rng: RandomNumberGenerator) -> void:
-	draw_colored_polygon(_blob(40.0, 14, 0.15, rng, _u(Vector2(8, 10))), Color(0, 0, 0, 0.22))
+	draw_colored_polygon(_blob(40.0, 14, 0.15, rng, _u(Vector2(8, 10))), MapData.shadow_color(0.22))
 	var n := 7
 	var off := rng.randf() * TAU
 	for i in n:
@@ -898,7 +919,7 @@ func _draw_mushroom(rng: RandomNumberGenerator) -> void:
 	for i in 3:
 		var c := Vector2(rng.randf_range(-7, 7), rng.randf_range(-7, 7))
 		var r := rng.randf_range(4.5, 7.0)
-		draw_circle(c + _u(Vector2(1.5, 2)), r, Color(0, 0, 0, 0.3))
+		draw_circle(c + _u(Vector2(1.5, 2)), r, MapData.shadow_color(0.3))
 		draw_circle(c, r, Color("a8342e") if i != 1 else Color("c8a46a"))
 		draw_circle(c, r * 0.55, Color("d4524a") if i != 1 else Color("e6c88a"))
 		draw_circle(c + Vector2(-r * 0.2, -r * 0.2), r * 0.18, Color("f4f0e0"))

@@ -1,17 +1,22 @@
-﻿class_name Player
+class_name Player
 extends CharacterBody2D
 ## Simple top-down test character with a lantern and a follow camera.
 
 const SPEED := 160.0
+const Loadout := preload("res://scripts/loadout.gd")
+const SHOW_HANDS_FEET := false  # set to true to draw the hands, arms, fists and boots again
+const SHOW_SHOULDERS := false  # set to true to draw the shoulders / torso (shirt and vest) again
 const STEP_LENGTH := 22.0  # pixels walked per step
 const STEP_PULSE := 0.025  # how much bigger the character gets mid-step (0.025 = 2.5%)
 const PRINT_LIFE := 6.0  # seconds a footprint takes to fade away
 const MAX_PRINTS := 60
 const TURN_RATE := 14.0  # how fast the character turns to face its direction (higher = snappier)
 const HeadArt := preload("res://scripts/head_art.gd")
+const ShotPreview := preload("res://scripts/shot_preview.gd")
 
 ## Selected head (hat or hair, see head_art.gd); static so the choice is kept between play-test sessions.
-static var head_style := 0
+## Starts on the first hair style (no hat): head_art.gd lists the hats first, then the hair.
+static var head_style: int = HeadArt.HatArt.STYLES.size()
 ## Selected weapon key ("none" or a key in Weapons.RANGED); static like head_style.
 static var weapon := "none"
 ## Auto reload (on-screen toggle): reload a partly used magazine once you stop firing. Static like weapon.
@@ -22,6 +27,12 @@ var _since_shot := 0.0
 const MAX_HP := 100
 
 signal health_changed(hp: int, max_hp: int)
+
+## Morale: drops when the player runs away from a fight (the "Run away" spot). Restored on respawn.
+const MAX_MORALE := 100
+const FLEE_MORALE_LOSS := 15
+signal morale_changed(morale: int, max_morale: int)
+var morale := MAX_MORALE
 ## Knocked out (0 hp) and sent back to the spawn point.
 signal respawned
 
@@ -114,8 +125,9 @@ func _ready() -> void:
 	# Top-down: no floor/gravity. The default "grounded" mode treats walls and props as slopes and
 	# snaps to a floor, which makes the character hop and bounce along obstacles.
 	motion_mode = CharacterBody2D.MOTION_MODE_FLOATING
-	weapon = "none"  # every play-test starts unarmed: fists only
-	collision_mask = 1 | 2  # world + water
+	weapon = "pistol"  # every play-test starts with the revolver in hand
+	Loadout.apply_to(self)  # gold left over and weapons bought on the purchase screen
+	collision_mask = 1 | 2 | Projectile.LOW_MASK  # world + water + low props
 	add_to_group("combatants")
 	add_to_group("player")
 	_spawn = position
@@ -135,7 +147,9 @@ func _ready() -> void:
 	add_child(lantern)
 
 	var cam := Camera2D.new()
-	cam.zoom = Vector2(1.4, 1.4)
+	_setup_revolver()
+	_cam = cam
+	cam.zoom = Vector2(NORMAL_ZOOM, NORMAL_ZOOM)
 	cam.position_smoothing_enabled = true
 	cam.limit_left = 0
 	cam.limit_top = 0
@@ -166,12 +180,23 @@ func _ready() -> void:
 	_reticle.draw.connect(_draw_reticle)
 	add_child(_reticle)
 
+	var preview := ShotPreview.new()  # hover an NPC: aim cone, cover and damage preview
+	preview.player = self
+	add_child(preview)
+
 	_interact_marker = Node2D.new()
 	_interact_marker.top_level = true
 	_interact_marker.z_index = 21
 	_interact_marker.visible = false
 	_interact_marker.draw.connect(_draw_interact_marker)
 	add_child(_interact_marker)
+
+	_cover_layer = Node2D.new()  # highlighted cover spots while it is your turn
+	_cover_layer.top_level = true
+	_cover_layer.z_index = 19
+	_cover_layer.visible = false
+	_cover_layer.draw.connect(_draw_cover_layer)
+	add_child(_cover_layer)
 	_build_grid()
 
 
@@ -206,11 +231,11 @@ func _physics_process(delta: float) -> void:
 	var dir := Vector2(
 		float(Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT)) - float(Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT)),
 		float(Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN)) - float(Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP)))
-	var speed := SPEED * (1.7 if Input.is_key_pressed(KEY_SHIFT) else 1.0)
-	if turn_mode and (not my_turn or move_left <= 0.0):
-		# Turn-based: no walking outside your turn or once this turn's movement is used up.
+	var speed := SPEED * (1.7 if Input.is_key_pressed(KEY_SHIFT) or _combat_run else 1.0)
+	if turn_mode:
+		# Turn-based: no free walking. The only way to move is running to a highlighted spot.
 		dir = Vector2.ZERO
-		if not _path.is_empty():
+		if not (my_turn and _combat_run) and not _path.is_empty():
 			_clear_path()
 	if dir != Vector2.ZERO:
 		_clear_path()  # keyboard overrides click-to-move
@@ -261,6 +286,10 @@ func _physics_process(delta: float) -> void:
 				_clear_path()
 		else:
 			_stuck = 0.0
+	if _combat_run and _path.is_empty():
+		_finish_run()
+	if _cover_layer != null and (_cover_layer.visible or not _spots.is_empty()):
+		_update_cover_layer()
 
 
 # ---------------------------------------------------------------- footprints
@@ -428,6 +457,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		var mp := get_global_mouse_position()
 		_pending_target = null
 		_punch_chase = null
+		if turn_mode:
+			# In a fight you only move by clicking one of the highlighted spots.
+			var si := _spot_at(mp) if my_turn and not _combat_run else -1
+			if si >= 0:
+				_run_to_spot(si)
+				get_viewport().set_input_as_handled()
+				return
 		var npc := _npc_at(mp)
 		if event.double_click and weapon == "none":
 			# Punch selected: double-clicking a target walks right up to it.
@@ -443,6 +479,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				return
 		if npc != null and npc != target and global_position.distance_to(npc.global_position) > NPC_TARGET_RANGE:
 			# Too far to target yet: walk toward the NPC and lock on once within 6 tiles.
+			if turn_mode:
+				notice.emit("Too far to target")
+				get_viewport().set_input_as_handled()
+				return
 			_pending_target = npc
 			set_interact(null)
 			_move_to(npc.global_position)
@@ -460,7 +500,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				set_interact(null)
 			else:
 				set_interact(opening)
-		else:
+		elif not turn_mode:
 			set_interact(null)
 			_move_to(mp)
 			_hold_move = true  # keep following the cursor while the button stays down
@@ -482,7 +522,7 @@ func _unhandled_input(event: InputEvent) -> void:
 # ---------------------------------------------------------------- combat
 
 ## Weapons the player carries. Fists ("none") only at the start of every play-test.
-var owned_weapons: Array = ["none"]
+var owned_weapons: Array = ["pistol"]
 
 
 func has_weapon(key: String) -> bool:
@@ -550,6 +590,16 @@ func _muzzle_clear(muzzle: Vector2) -> bool:
 	return get_world_2d().direct_space_state.intersect_ray(q).is_empty()
 
 
+## Where a shot aimed at `at` leaves from: the gun's muzzle, or the body when a wall is in the way
+## (same rule as shoot_at). Used by the shot preview.
+func shot_origin(at: Vector2) -> Vector2:
+	var dir := (at - global_position).normalized()
+	var muzzle := global_position + Weapons.muzzle_offset(weapon, dir)
+	if muzzle != global_position and _muzzle_clear(muzzle):
+		return muzzle
+	return global_position
+
+
 ## Fires the selected weapon toward `target` if it is ranged, loaded and off cooldown.
 func shoot_at(target: Vector2) -> void:
 	if weapon == "none":
@@ -559,6 +609,9 @@ func shoot_at(target: Vector2) -> void:
 		return
 	if turn_mode and not (my_turn and action_left):
 		return  # turn-based: one shot per turn, on your own turn
+	if wall_cover:
+		notice.emit("Can't shoot from behind the wall - move out first")
+		return
 	if not weapon_drawn:
 		draw_weapon()  # first pull it out; the shot comes after DRAW_TIME
 		return
@@ -594,9 +647,25 @@ func shoot_at(target: Vector2) -> void:
 		var spread := Weapons.spread_mul_at(weapon, global_position.distance_to(target))
 		Projectile.fire(get_tree().current_scene, weapon, from, dir, self, spread)
 	MuzzleFlash.spawn(get_tree().current_scene, from + dir * 14.0, dir)  # fire + smoke at the barrel tip
+	_alert_shot_at(target)
+	var shot_at: NpcNode = self.target as NpcNode if is_instance_valid(self.target) else null  # a shot at an NPC alerts it, even when it misses
+	if shot_at != null:
+		shot_at.alerted = true
 	if ammo() <= 0 and not turn_mode:
 		reload()  # in a turn-based fight reloading takes a later turn's action instead
 	queue_redraw()
+
+
+## The NPC being shot at turns to face the player, hit or miss: the locked-on NPC, otherwise
+## the NPC nearest the aim point (within a click's reach).
+func _alert_shot_at(aim: Vector2) -> void:
+	var npc: Node2D = null
+	if is_instance_valid(self.target) and self.target.is_in_group("npcs"):
+		npc = self.target
+	else:
+		npc = _npc_at(aim)
+	if npc != null and is_instance_valid(npc) and npc.has_method("face_toward"):
+		npc.call("face_toward", global_position)
 
 
 # ---------------------------------------------------------------- punching (unarmed)
@@ -659,48 +728,99 @@ func punch_at(toward: Vector2) -> void:
 
 ## The hat brim reaches about 12.5 px to the front and 15 px to the sides, so limbs have to reach
 ## past that to be seen.
-const FOOT_STRIDE := 15.0  # how far a foot swings ahead of / behind the body mid-step
+const FOOT_STRIDE := 9.0  # how far a foot swings ahead of / behind the body mid-step
 
 
 ## Body proportions, styled on the top-down cowboy reference: the shoulders are a wide oval that
 ## shows on both sides of the hat, arms reach forward to the hands, boots step out front and back.
-const SHOULDER_W := 15.0     # half-width of the shoulders (sideways); the hat brim is ~15
-const TORSO_D := 7.0         # half-depth of the torso (front to back)
-const SHIRT := Color("3b6fb0")
-const SHIRT_DARK := Color("2c5288")
+const SHOULDER_W := 13.0     # half-width of the shoulders (sideways); hair is ~8.5, a hat brim ~15
+const TORSO_D := 6.5         # half-depth of the torso (front to back)
+## Shirt colour, picked in the profile panel; static like head_style so it is kept between play-tests.
+static var shirt_color := Color("3b6fb0")
+const VEST := Color("6a4426")
+const VEST_DARK := Color("4a2e18")
 const SKIN := Color("e8c9a0")
 const OUTLINE := Color("101820")
 
 
-## Unarmed fists sit up in a guard in front of the chest and jab straight out.
+## Where a hand hangs: straight down from the shoulder (seen from above, right under it),
+## swinging a little forward / back against the leg on that side with each step.
+func _hang_pos(s: float) -> Vector2:
+	var side := body_dir().orthogonal()  # follows the shoulder as the torso twists
+	return side * (SHOULDER_W - 3.0) * s - facing * arm_swing() * s
+
+
+## Unarmed fists hang at the sides and only come up to jab out in front when punching.
 func _fist_pos(s: float) -> Vector2:
 	var side := facing.orthogonal()
-	var rest: Vector2 = side * 8.0 * s + facing * 13.0
+	var rest: Vector2 = _hang_pos(s)
 	if _punch_t > 0.0 and s == _punch_side:
 		var k := sin((1.0 - _punch_t / PUNCH_ANIM) * PI)  # jab out and back
 		return rest.lerp(facing * 22.0 + side * 3.0 * s, k)
 	return rest
 
 
+## True while fist `s` is out on a punch (otherwise it hangs under the shoulder).
+func _is_punching(s: float) -> bool:
+	return _punch_t > 0.0 and s == _punch_side
+
+
+## Only the punching fist is drawn above the body; resting fists are drawn under the shoulders.
 func _draw_fists() -> void:
 	var edge := Color(0.25, 0.15, 0.08)
 	for s in [-1.0, 1.0]:
+		if not _is_punching(s):
+			continue
 		var p: Vector2 = _fist_pos(s)
 		draw_circle(p, 3.0, SKIN)
 		draw_arc(p, 3.0, 0.0, TAU, 12, edge, 1.0)
 
 
-## Wide oval torso turned to `facing`, shoulders darker at the ends.
-func _draw_torso() -> void:
-	var side := facing.orthogonal()
+## Torso outline turned to `facing`: a squarish oval (superellipse) so the shoulders read as
+## shoulders rather than a floating egg. `w` = half-width sideways, `d` = half-depth front to back.
+## The back is pulled in a little so the chest sits forward under the head.
+func _torso_shape(w: float, d: float, off: Vector2 = Vector2.ZERO) -> PackedVector2Array:
+	var fwd := body_dir()
+	var side := fwd.orthogonal()
 	var pts := PackedVector2Array()
-	for i in 24:
-		var a := TAU * float(i) / 24.0
-		pts.append(facing * cos(a) * TORSO_D + side * sin(a) * SHOULDER_W)
-	draw_colored_polygon(pts, SHIRT)
+	var e := 2.0 / 2.8  # exponent for a squarer curve (2/n with n = 2.8)
+	for i in 32:
+		var a := TAU * float(i) / 32.0
+		var c := cos(a)
+		var sn := sin(a)
+		var x := signf(c) * pow(absf(c), e) * d * (1.0 if c > 0.0 else 0.85)
+		var y := signf(sn) * pow(absf(sn), e) * w
+		pts.append(off + fwd * x + side * y)
+	return pts
+
+
+## How far (radians) the shoulders turn with each step. Walking, the shoulders counter-rotate
+## against the hips: the shoulder on the side of the back leg comes forward with its arm.
+const TORSO_TWIST := 0.07
+
+
+## The way the torso points this moment: `facing`, turned a little by the walking twist.
+## Head, legs and gun aim stay on `facing`.
+func body_dir() -> Vector2:
+	return facing.rotated(-sin(_step_phase) * TORSO_TWIST * _step_amount)
+
+
+## Shirt shoulders with a leather vest over the back and chest, shaded darker toward the back.
+func _draw_torso() -> void:
+	var fwd := body_dir()
+	var side := fwd.orthogonal()
+	var body := _torso_shape(SHOULDER_W, TORSO_D)
+	draw_colored_polygon(body, shirt_color)
+	# Shoulder caps: rounded sleeve tops where the arms join.
 	for s in [-1.0, 1.0]:
-		draw_circle(side * (SHOULDER_W - 4.0) * s, 4.0, SHIRT_DARK)  # shoulder seams
-	draw_polyline(pts + PackedVector2Array([pts[0]]), OUTLINE, 1.5)
+		draw_circle(side * (SHOULDER_W - 3.0) * s, 3.4, shirt_color.darkened(0.25))
+		draw_circle(side * (SHOULDER_W - 3.2) * s + fwd * 0.6, 2.4, shirt_color)
+	# Vest over the middle, leaving the shirt shoulders showing at the sides.
+	var vest := _torso_shape(SHOULDER_W - 4.5, TORSO_D - 0.4)
+	draw_colored_polygon(vest, VEST)
+	draw_colored_polygon(_torso_shape(SHOULDER_W - 5.5, TORSO_D - 2.5, -fwd * 1.8), VEST_DARK)  # back shade
+	draw_polyline(vest + PackedVector2Array([vest[0]]), VEST_DARK, 1.0)
+	draw_polyline(body + PackedVector2Array([body[0]]), OUTLINE, 1.5)
 
 
 ## Two boots that swap places with each step. Standing still they sit under the body.
@@ -720,50 +840,69 @@ func _draw_legs() -> void:
 		draw_polyline(boot + PackedVector2Array([boot[0]]), OUTLINE, 1.0)
 
 
+## How far (px) the hands swing forward / back this moment of the step. Same rhythm as the boots,
+## applied the opposite way so each arm swings forward with the other side's leg.
+const ARM_SWING := 5.0  # the shoulder is about 5 px deep there, so only the tip of the hand peeks out mid-step
+
+
+func arm_swing() -> float:
+	return sin(_step_phase) * ARM_SWING * _step_amount
+
+
 ## One arm: upper arm to an elbow bent outward, forearm to the hand.
 func _draw_arm(shoulder: Vector2, hand: Vector2, s: float, hand_dot: bool) -> void:
 	var side := facing.orthogonal()
-	var elbow: Vector2 = shoulder.lerp(hand, 0.5) + side * 2.5 * s
+	# The elbow bends outward only when the arm reaches out; a hanging arm stays straight.
+	var bend := clampf(shoulder.distance_to(hand) / 12.0, 0.0, 1.0)
+	var elbow: Vector2 = shoulder.lerp(hand, 0.5) + side * 2.5 * s * bend
 	draw_line(shoulder, elbow, OUTLINE, 6.0)
 	draw_line(elbow, hand, OUTLINE, 6.0)
 	draw_circle(elbow, 3.0, OUTLINE)
-	draw_line(shoulder, elbow, SHIRT, 4.5)
-	draw_line(elbow, hand, SHIRT, 4.0)
-	draw_circle(elbow, 2.2, SHIRT)
+	draw_line(shoulder, elbow, shirt_color, 4.5)
+	draw_line(elbow, hand, shirt_color, 4.0)
+	draw_circle(elbow, 2.2, shirt_color)
 	if hand_dot:
 		draw_circle(hand, 2.6, SKIN)
 		draw_arc(hand, 2.6, 0.0, TAU, 10, OUTLINE, 1.0)
 
 
-## Arms: up in a guard with fists when unarmed, reaching the grip (and the barrel for long guns)
+## Arms: fists at the sides when unarmed (jabbing out to punch), reaching the grip (and the barrel for long guns)
 ## when a gun is drawn, otherwise hanging at the sides and swinging against the legs.
-func _draw_arms() -> void:
+## Seen from above, a hanging arm is straight down under its shoulder: only the hand is drawn, and
+## it is drawn before the torso (`under` = true) so the shoulder hides it until a step swings it
+## out front or back. Arms that reach out (punch, gun grip, barrel) are drawn over the torso.
+func _draw_arms(under: bool) -> void:
 	var side := facing.orthogonal()
-	var swing := sin(_step_phase) * 6.0 * _step_amount
 	for s in [-1.0, 1.0]:
-		var shoulder: Vector2 = side * (SHOULDER_W - 4.0) * s
-		var hang: Vector2 = side * (SHOULDER_W + 2.0) * s + facing * (2.0 - swing * s)
-		var hand: Vector2
+		var shoulder: Vector2 = body_dir().orthogonal() * (SHOULDER_W - 3.0) * s
+		var hand: Vector2 = _hang_pos(s)
+		var hanging := true
 		if weapon == "none":
-			hand = _fist_pos(s)
+			if _is_punching(s):
+				hand = _fist_pos(s)
+				hanging = false
 		elif weapon_drawn and Weapons.is_ranged(weapon):
 			var hold := side * 9.0 + facing * 2.0
 			if s > 0.0:
 				hand = hold
-			elif weapon == "pistol":
-				hand = hang
-			else:
+				hanging = false
+			elif weapon != "pistol":
 				hand = hold + facing * 12.0 - side * 1.0  # off hand supports the long gun's barrel
+				hanging = false
+		if hanging != under:
+			continue
+		if hanging:
+			draw_circle(hand, 3.0, SKIN)
+			draw_arc(hand, 3.0, 0.0, TAU, 12, OUTLINE, 1.0)
 		else:
-			hand = hang
-		_draw_arm(shoulder, hand, s, weapon != "none")
+			_draw_arm(shoulder, hand, s, weapon != "none")
 
 
 # ---------------------------------------------------------------- turn-based combat hooks
 
 ## Gun in hand (shown and ready). Holstered while exploring; drawn when a fight starts, when a
 ## target is picked, or when you fire. Put away again once combat ends and nothing is targeted.
-var weapon_drawn := false
+var weapon_drawn := true  # the revolver is always in hand for now (see holster())
 const DRAW_TIME := 0.3  # seconds before the first shot after pulling the gun out
 const HOLSTER_AFTER := 4.0  # with no target and no fight, the gun goes away this long after the last shot
 
@@ -779,10 +918,27 @@ func draw_weapon() -> void:
 
 
 func holster() -> void:
+	return  # disabled for now: the revolver stays in hand
 	if not weapon_drawn:
 		return
 	weapon_drawn = false
 	queue_redraw()
+
+
+const NORMAL_ZOOM := 1.1
+const COMBAT_ZOOM := 1.4  # camera zoom while a turn-based fight is on
+var _cam: Camera2D
+var _zoom_tween: Tween
+
+
+## Smoothly zooms the camera (used when combat starts and ends).
+func _zoom_camera(z: float) -> void:
+	if _cam == null:
+		return
+	if _zoom_tween != null and _zoom_tween.is_valid():
+		_zoom_tween.kill()
+	_zoom_tween = create_tween()
+	_zoom_tween.tween_property(_cam, "zoom", Vector2(z, z), 0.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 
 
 func enter_combat() -> void:
@@ -794,10 +950,12 @@ func enter_combat() -> void:
 	if _reload_left > 0.0:  # finish a reload that was under way
 		_reload_left = 0.0
 		_ammo[weapon] = Weapons.mag_size(weapon)
+	_zoom_camera(COMBAT_ZOOM)
 	queue_redraw()
 
 
 func leave_combat() -> void:
+	_zoom_camera(NORMAL_ZOOM)
 	if not is_instance_valid(target):
 		holster()
 	turn_mode = false
@@ -805,6 +963,9 @@ func leave_combat() -> void:
 	move_left = 0.0
 	action_left = false
 	extra_actions = 0
+	_combat_run = false
+	_spots.clear()
+	_clear_cover()
 	queue_redraw()
 
 
@@ -815,7 +976,8 @@ func play_card(kind: String) -> bool:
 		return false
 	match kind:
 		"dash":
-			move_left += COMBAT_MOVE  # double move
+			move_left += COMBAT_MOVE  # double move: a wider circle of spots
+			_refresh_spots()
 		"aim":
 			aimed = true  # applies to this turn's shot
 		"reload":
@@ -831,7 +993,7 @@ func play_card(kind: String) -> bool:
 
 ## Whether `kind` could be played now (used to grey out cards).
 func can_play_card(kind: String) -> bool:
-	if not (turn_mode and my_turn) or card_played:
+	if not (turn_mode and my_turn) or card_played or _combat_run:
 		return false
 	match kind:
 		"dash":
@@ -863,6 +1025,8 @@ func begin_turn() -> void:
 	card_played = false
 	aimed = false
 	_cooldown = 0.0
+	_flee_set = false  # a new random run-away spot each turn
+	_refresh_spots()
 	queue_redraw()
 
 
@@ -873,8 +1037,429 @@ func end_turn() -> void:
 	extra_actions = 0
 	aimed = false
 	fire_held = false
+	_combat_run = false
+	_spots.clear()
 	_clear_path()
 	queue_redraw()
+
+
+# ---------------------------------------------------------------- cover spots (turn-based movement)
+# In a fight you don't walk freely. The spots behind props (on the side away from the nearest
+# enemy) that lie inside your movement circle are highlighted; clicking one runs you there and
+# uses up your whole turn. Standing in cover gives a chance to soak up incoming shots equal to
+# the prop's defence score (MapData.PROPS "defence").
+
+const COVER_GAP := 18.0     # px between a prop's edge and the spot behind it
+const SPOT_PICK := 24.0     # how close (px) a click must land to a spot
+const BEHIND_GAP := 24.0    # sneaking: spot this far behind an unaware enemy, within punch reach
+const ENGAGE_GAP := 28.0    # unarmed: spot this far from an enemy, close enough to punch
+
+## Highlighted spots this turn: [{pos, node, kind ("cover" | "engage" | "flee"), defence, label}].
+var _spots: Array = []
+var _flee_pos := Vector2.ZERO  # this turn's run-away spot (see _add_flee_spot)
+var _flee_set := false
+var _combat_run := false    # running to a spot (the only way to move in a fight)
+var _run_spot := {}
+var _cover_layer: Node2D
+## Prop the player is crouching behind (null = in the open) and its defence score (0..1).
+var cover_prop: PropNode = null
+var cover_defence := 0.0
+
+
+func is_running() -> bool:
+	return _combat_run
+
+
+func has_spots() -> bool:
+	return not _spots.is_empty()
+
+
+func _hostile_npcs() -> Array:
+	var out: Array = []
+	for n in get_tree().get_nodes_in_group("npcs"):
+		var npc := n as Node2D
+		if npc != null and is_instance_valid(npc) and not npc.is_queued_for_deletion() \
+				and int(npc.get("hp")) > 0 and npc.get("disposition") == "hostile":
+			out.append(npc)
+	return out
+
+
+func _nearest_to(nodes: Array, p: Vector2) -> Node2D:
+	var best: Node2D = null
+	var best_d := INF
+	for n in nodes:
+		var d: float = (n as Node2D).global_position.distance_squared_to(p)
+		if d < best_d:
+			best_d = d
+			best = n
+	return best
+
+
+## Works out the spots inside the movement circle: behind props that give cover, and (fists only)
+## next to an enemy.
+func _refresh_spots() -> void:
+	_spots.clear()
+	if _grid == null or not (turn_mode and my_turn) or _combat_run or move_left < 1.0:
+		return
+	var threats := _hostile_npcs()
+	if threats.is_empty():
+		return
+	var reach := move_left
+	_add_flee_spot(threats, reach)
+	# Sneaking: a spot right behind each hostile that hasn't noticed you yet (if it is in reach).
+	for t in threats:
+		var npc := t as NpcNode
+		if npc == null or npc.alerted:
+			continue
+		var spot := npc.global_position - npc.facing_dir() * BEHIND_GAP
+		if _route_unseen(spot, threats):
+			_try_add_spot(spot, npc, "behind", 0.0, "Sneak behind " + npc.npc_name, reach)
+	for n in get_tree().get_nodes_in_group("props"):
+		var prop := n as PropNode
+		if prop == null or prop.is_queued_for_deletion() or prop.defence() <= 0.0:
+			continue
+		var foe := _nearest_to(threats, prop.global_position)
+		var away := prop.global_position - foe.global_position
+		if away.length() < 1.0:
+			continue
+		away = away.normalized()
+		var spot := prop.global_position + away * (prop.edge_distance(away) + COVER_GAP)
+		_try_add_spot(spot, prop, "cover", prop.defence(), prop.label(), reach)
+	_add_wall_spots(threats, reach)
+	if weapon == "none":
+		for t in threats:
+			var npc := t as Node2D
+			var to := global_position - npc.global_position
+			if to.length() < 1.0:
+				continue
+			var spot := npc.global_position + to.normalized() * ENGAGE_GAP
+			_try_add_spot(spot, npc, "engage", 0.0, "Close in", reach)
+
+
+func _try_add_spot(spot: Vector2, node: Node2D, kind: String, defence: float, label: String, reach: float) -> bool:
+	var d := spot.distance_to(global_position)
+	if d > reach or d < 14.0 or not Rect2(Vector2.ZERO, map_size).has_point(spot):
+		return false
+	var c := Vector2i((spot / CELL).floor())
+	if not _grid.is_in_boundsv(c) or _grid.is_point_solid(c):
+		return false
+	for s in _spots:
+		if (s["pos"] as Vector2).distance_to(spot) < 24.0:
+			return false  # too close to a spot that is already marked
+	var plen := _path_length(spot)
+	if plen < 0.0 or plen > reach * 1.15:  # the grid path is a little longer than the smoothed run
+		return false
+	_spots.append({"pos": spot, "node": node, "kind": kind, "defence": defence, "label": label})
+	return true
+
+
+## Marks the run-away spot: the point at the edge of the movement circle that is farthest from the
+## nearest hostile. Picked once per turn and kept, so it doesn't jump around.
+func _add_flee_spot(threats: Array, reach: float) -> void:
+	if _flee_set:
+		_try_add_spot(_flee_pos, self, "flee", 0.0, "Run away", reach)
+		return
+	# Walk around the rim of the movement circle (stepping inward only where walls or water block
+	# the rim) and take the point that is farthest from the nearest hostile.
+	var best := Vector2.ZERO
+	var best_d := -1.0
+	for a in 48:
+		var dir := Vector2.RIGHT.rotated(TAU * float(a) / 48.0)
+		for f in [0.97, 0.9, 0.8, 0.7, 0.6]:
+			var spot: Vector2 = global_position + dir * reach * float(f)
+			if not _flee_spot_ok(spot, reach):
+				continue
+			var d := INF
+			for t in threats:
+				d = minf(d, spot.distance_to((t as Node2D).global_position))
+			if d > best_d:
+				best_d = d
+				best = spot
+			break  # the outermost reachable point on this bearing is the one that counts
+	if best_d >= 0.0 and _try_add_spot(best, self, "flee", 0.0, "Run away", reach):
+		_flee_pos = best
+		_flee_set = true
+
+
+const WALL_SPOT_STEP := 56.0  # px between wall-cover candidates along a wall
+const WALL_SPOT_GAP := 16.0   # how far from the wall's face the player crouches
+const MAX_WALL_SPOTS := 4     # keep the screen readable: only the closest few are marked
+
+## Spots hugging a wall on the side away from the hostiles, where the wall breaks every hostile's
+## line of sight. Hiding there you can't shoot (see in_wall_cover), and NPCs must move to see you.
+func _add_wall_spots(threats: Array, reach: float) -> void:
+	var space := get_world_2d().direct_space_state
+	var found: Array = []  # [dist, pos]
+	var watchers := _watchers(threats)
+	for w in MapData.working.get("walls", []):
+		if str(w.get("style", "wall")) == "rail":
+			continue
+		var pts: PackedVector2Array = w["points"]
+		if pts.size() < 2:
+			continue
+		var path := PackedVector2Array(pts)
+		if bool(w.get("closed", false)):
+			path.append(pts[0])
+		var off := float(w.get("width", 8.0)) * 0.5 + WALL_SPOT_GAP
+		var cands: Array = []
+		# Along each segment, on BOTH faces (the hidden face isn't always the one "away" from the
+		# nearest enemy, e.g. the outside of a building's side wall), including close to the ends.
+		for i in path.size() - 1:
+			var a: Vector2 = path[i]
+			var b: Vector2 = path[i + 1]
+			var seg_len := a.distance_to(b)
+			if seg_len < 1.0:
+				continue
+			var normal := (b - a).normalized().orthogonal()
+			var n := maxi(int(seg_len / WALL_SPOT_STEP), 1) + 1
+			for k in n + 1:
+				var on_wall := a.lerp(b, clampf(float(k) / float(n), 0.0, 1.0))
+				cands.append(on_wall + normal * off)
+				cands.append(on_wall - normal * off)
+		# Around each corner / wall end: ducking round a corner is the classic wall cover.
+		for v in path:
+			for d in 8:
+				cands.append((v as Vector2) + Vector2.RIGHT.rotated(TAU * float(d) / 8.0) * off * 1.4)
+		for c in cands:
+			var spot: Vector2 = c
+			var dist := spot.distance_to(global_position)
+			if dist > reach or dist < 20.0:
+				continue
+			var cell := Vector2i((spot / CELL).floor())
+			if not _grid.is_in_boundsv(cell) or _grid.is_point_solid(cell):
+				continue  # too tight against the wall for the path grid
+			if not _hidden_from_all(spot, watchers, space):
+				continue
+			found.append([dist, spot])
+	found.sort_custom(func(x, y) -> bool: return x[0] < y[0])
+	var added: Array = []
+	for f in found:
+		var p: Vector2 = f[1]
+		if added.size() >= MAX_WALL_SPOTS:
+			break
+		var crowded := false
+		for q in added:
+			if (q as Vector2).distance_to(p) < 48.0:
+				crowded = true  # spread the few marked spots out instead of bunching them
+				break
+		if not crowded and _try_add_spot(p, self, "wall", 0.0, "Wall cover", reach):
+			added.append(p)
+
+
+## The hostiles a hiding spot has to be hidden from: every NPC in the current fight (however far
+## away it stands) plus any other hostile close enough to see the spot area.
+func _watchers(threats: Array) -> Array:
+	var out: Array = []
+	var fight := get_tree().get_first_node_in_group("combat")
+	if fight != null and bool(fight.get("active")):
+		for e in fight.get("order"):
+			var node = e["node"]  # untyped: may be freed
+			if is_instance_valid(node) and node is NpcNode and (node as NpcNode).hp > 0:
+				out.append(node)
+	for t in threats:
+		var npc := t as Node2D
+		if not out.has(npc) and npc.global_position.distance_to(global_position) <= Combat.JOIN_RANGE + COMBAT_MOVE:
+			out.append(npc)
+	return out
+
+
+## True when a wall (or closed door) sits between `p` and every hostile in `watchers`
+## (and there is at least one).
+func _hidden_from_all(p: Vector2, watchers: Array, space: PhysicsDirectSpaceState2D) -> bool:
+	if watchers.is_empty():
+		return false
+	var exclude: Array[RID] = [get_rid()]
+	for n in get_tree().get_nodes_in_group("combatants"):
+		if n is CollisionObject2D:
+			exclude.append((n as CollisionObject2D).get_rid())  # bodies don't hide you
+	for t in watchers:
+		var npc := t as Node2D
+		var q := PhysicsRayQueryParameters2D.create(npc.global_position, p, 1, exclude)
+		var hit := space.intersect_ray(q)
+		if hit.is_empty() or (hit["collider"] as Node).get_parent() is PropNode:
+			return false  # open line, or only a prop in the way (props are normal cover)
+	return true
+
+
+## Crouched behind a wall: hidden, but you can't shoot from here. Cleared when you move.
+var wall_cover := false
+
+func in_wall_cover() -> bool:
+	return wall_cover
+
+
+## Same checks as _try_add_spot (inside the circle, on the map, walkable, reachable by path), without adding.
+func _flee_spot_ok(spot: Vector2, reach: float) -> bool:
+	if not Rect2(Vector2.ZERO, map_size).has_point(spot):
+		return false
+	var c := Vector2i((spot / CELL).floor())
+	if not _grid.is_in_boundsv(c) or _grid.is_point_solid(c):
+		return false
+	var plen := _path_length(spot)
+	return plen >= 0.0 and plen <= reach * 1.15
+			
+
+## True when walking to `to` never passes through the view arc of any of `threats`
+## (the whole walking path is sampled, including where it ends).
+func _route_unseen(to: Vector2, threats: Array) -> bool:
+	if _grid == null:
+		return false
+	var start := _cell(position)
+	var start_was_solid := _grid.is_point_solid(start)
+	if start_was_solid:
+		_grid.set_point_solid(start, false)
+	var pts := _grid.get_point_path(start, _cell(to))
+	if start_was_solid:
+		_grid.set_point_solid(start, true)
+	if pts.size() < 2:
+		return false
+	pts[0] = position  # the walk starts where the player really stands
+	pts[pts.size() - 1] = to
+	for i in range(1, pts.size()):
+		var a: Vector2 = pts[i - 1]
+		var b: Vector2 = pts[i]
+		var steps := maxi(int(a.distance_to(b) / 8.0), 1)
+		for k in range(1, steps + 1):
+			var p := a.lerp(b, float(k) / float(steps))
+			for t in threats:
+				var npc := t as NpcNode
+				if npc != null and npc.arc_covers(p, Combat.JOIN_RANGE):
+					return false
+	return true
+
+
+## Length of the walking path to `to`, or -1 when there is none.
+func _path_length(to: Vector2) -> float:
+	var start := _cell(position)
+	var start_was_solid := _grid.is_point_solid(start)
+	if start_was_solid:
+		_grid.set_point_solid(start, false)
+	var pts := _grid.get_point_path(start, _cell(to))
+	if start_was_solid:
+		_grid.set_point_solid(start, true)
+	if pts.size() < 2:
+		return -1.0
+	var total := 0.0
+	for i in range(1, pts.size()):
+		total += pts[i - 1].distance_to(pts[i])
+	return total
+
+
+func _spot_at(p: Vector2) -> int:
+	var best := -1
+	var best_d := SPOT_PICK
+	for i in _spots.size():
+		var d: float = p.distance_to(_spots[i]["pos"])
+		if d < best_d:
+			best_d = d
+			best = i
+	return best
+
+
+func _clear_cover() -> void:
+	cover_prop = null
+	cover_defence = 0.0
+	wall_cover = false
+
+
+## Runs to spot `i`. The run uses up the whole turn (the action is given up).
+func _run_to_spot(i: int) -> void:
+	if i < 0 or i >= _spots.size() or not my_turn:
+		return
+	var spot: Dictionary = _spots[i]
+	_clear_cover()
+	set_interact(null)
+	_clear_path()
+	_combat_run = true
+	_move_to(spot["pos"])
+	if _path.is_empty():
+		_combat_run = false
+		notice.emit("Can't get there")
+		return
+	_run_spot = spot
+	if spot["kind"] == "flee":
+		morale = maxi(morale - FLEE_MORALE_LOSS, 0)
+		morale_changed.emit(morale, MAX_MORALE)
+		notice.emit("You ran away - morale -%d" % FLEE_MORALE_LOSS)
+	action_left = false
+	extra_actions = 0
+	fire_held = false
+	_spots.clear()
+	queue_redraw()
+
+
+## The run is over: settle into cover (if that is where it ended) and end the turn's movement.
+func _finish_run() -> void:
+	_combat_run = false
+	var spot := _run_spot
+	_run_spot = {}
+	if not spot.is_empty() and spot["kind"] == "cover" and is_instance_valid(spot["node"]) \
+			and position.distance_to(spot["pos"]) < 30.0:
+		cover_prop = spot["node"]
+		cover_defence = float(spot["defence"])
+		notice.emit("In cover behind %s (defence %d%%)" % [spot["label"], roundi(cover_defence * 100.0)])
+	elif not spot.is_empty() and spot["kind"] == "wall" and position.distance_to(spot["pos"]) < 30.0:
+		wall_cover = true
+		notice.emit("Behind a wall: hidden, but you can't shoot from here")
+	move_left = 0.0
+	action_left = false
+	queue_redraw()
+
+
+## True when `from` is shooting at the player across the prop they are crouching behind and the
+## prop soaks the shot up (a roll against its defence score).
+func _cover_absorbs(from: Node) -> bool:
+	if not is_instance_valid(cover_prop) or cover_defence <= 0.0 or not is_instance_valid(from):
+		return false
+	var shooter := from as Node2D
+	if shooter == null:
+		return false
+	var s := shooter.global_position
+	if s.distance_to(global_position) < 60.0:
+		return false  # point blank: cover doesn't help
+	var c := cover_prop.global_position
+	if (s - global_position).dot(c - global_position) <= 0.0:
+		return false  # the prop is on the other side
+	var cp := Geometry2D.get_closest_point_to_segment(c, s, global_position)
+	var off := cp - c
+	var body := cover_prop.edge_distance(off.normalized() if off.length() > 0.5 else Vector2.RIGHT)
+	if off.length() > body + 14.0:
+		return false  # the shot comes past the side of the prop
+	return randf() < cover_defence
+
+
+func _update_cover_layer() -> void:
+	for i in range(_spots.size() - 1, -1, -1):
+		if not is_instance_valid(_spots[i]["node"]):  # barrel shot apart, enemy defeated
+			_spots.remove_at(i)
+	var show := turn_mode and my_turn and not _combat_run and not _spots.is_empty()
+	_cover_layer.visible = show
+	if show:
+		_cover_layer.queue_redraw()
+
+
+func _draw_cover_layer() -> void:
+	var t := Time.get_ticks_msec() / 1000.0
+	var hover := _spot_at(get_global_mouse_position()) if get_viewport().gui_get_hovered_control() == null else -1
+	var font := ThemeDB.fallback_font
+	for i in _spots.size():
+		var s: Dictionary = _spots[i]
+		var p: Vector2 = s["pos"]
+		var cover: bool = s["kind"] == "cover"
+		var col: Color = Color(0.35, 0.9, 0.5) if cover else ({
+			"flee": Color(0.5, 0.7, 1.0), "behind": Color(0.75, 0.5, 1.0), "wall": Color(0.8, 0.8, 0.75),
+		} as Dictionary).get(s["kind"], Color(1.0, 0.7, 0.3))
+		var hot := i == hover
+		var r := 15.0 + sin(t * 4.0 + float(i)) * 1.2 + (3.0 if hot else 0.0)
+		if cover and is_instance_valid(s["node"]):
+			_cover_layer.draw_line((s["node"] as Node2D).global_position, p, Color(col, 0.22), 1.5)
+		_cover_layer.draw_circle(p, r, Color(col, 0.38 if hot else 0.18))
+		_cover_layer.draw_arc(p, r, 0.0, TAU, 28, Color(col, 1.0 if hot else 0.75), 2.5 if hot else 2.0)
+		_cover_layer.draw_circle(p, 2.5, Color(col, 0.9))
+		var txt: String = "%s  DEF %d%%" % [s["label"], roundi(float(s["defence"]) * 100.0)] if cover else str(s["label"])
+		_cover_layer.draw_string(font, p + Vector2(-70, r + 14.0), txt, HORIZONTAL_ALIGNMENT_CENTER, 140, 12, Color(col.lightened(0.3), 1.0))
+		if hot:
+			_cover_layer.draw_string(font, p + Vector2(-70, r + 28.0), "run here (uses your turn)", HORIZONTAL_ALIGNMENT_CENTER, 140, 11, Color(1, 1, 1, 0.85))
 
 
 ## Selects a door or window (or clears with null) and walks to the near side of it.
@@ -1110,17 +1695,23 @@ func _draw_reticle() -> void:
 		_reticle.draw_line(d * (r - 4.0), d * (r + 5.0), col, 2.0)
 
 
-func take_damage(amount: int, _from: Node) -> void:
+func take_damage(amount: int, from: Node) -> void:
 	if hp <= 0:
+		return
+	if _cover_absorbs(from):
+		notice.emit("Cover soaked up the shot")
 		return
 	hp = maxi(hp - amount, 0)
 	_hurt_flash = 0.25
 	if hp == 0:
 		# Simple play-test respawn: back to the spawn point with full health.
 		_clear_path()
+		_clear_cover()
 		position = _spawn
 		reset_physics_interpolation()
 		hp = MAX_HP
+		morale = MAX_MORALE
+		morale_changed.emit(morale, MAX_MORALE)
 		_ammo.clear()  # respawn with full magazines
 		_reload_left = 0.0
 		respawned.emit()
@@ -1129,6 +1720,8 @@ func take_damage(amount: int, _from: Node) -> void:
 
 
 func _move_to(target: Vector2) -> void:
+	if turn_mode and not _combat_run:
+		return  # turn-based: only the run to a highlighted spot moves you
 	var goal := _nearest_free(_cell(target))
 	if goal.x < 0:
 		return
@@ -1193,21 +1786,39 @@ func _draw_marker() -> void:
 
 
 func _draw() -> void:
-	if turn_mode and my_turn and move_left > 1.0:
-		# How far you can still walk this turn (straight-line guide).
+	if turn_mode and my_turn:
+		# Filled highlight under the player while it is their turn.
+		draw_circle(Vector2.ZERO, 17.0, Color(0.35, 0.8, 1.0, 0.35))
+		draw_arc(Vector2.ZERO, 17.0, 0.0, TAU, 28, Color(0.35, 0.8, 1.0, 0.95), 2.5)
+	if turn_mode and wall_cover:
+		draw_string(ThemeDB.fallback_font, Vector2(-60, 32), "Behind wall (can't shoot)",
+				HORIZONTAL_ALIGNMENT_CENTER, 120, 11, Color(0.85, 0.85, 0.8))
+	if turn_mode and is_instance_valid(cover_prop):
+		draw_string(ThemeDB.fallback_font, Vector2(-60, 32), "In cover %d%%" % roundi(cover_defence * 100.0),
+				HORIZONTAL_ALIGNMENT_CENTER, 120, 11, Color(0.5, 1.0, 0.6))
+	if turn_mode and my_turn and move_left > 1.0 and not _combat_run:
+		# How far you can run this turn: the highlighted spots lie inside this circle.
 		draw_circle(Vector2.ZERO, move_left, Color(0.35, 0.8, 1.0, 0.07))
 		draw_arc(Vector2.ZERO, move_left, 0.0, TAU, 64, Color(0.35, 0.8, 1.0, 0.6), 1.5)
 	# Ground shadow stays the same size; the character above it pulses with each step.
-	draw_circle(Vector2(3, 4), 7.0, Color(0, 0, 0, 0.3))
+	draw_colored_polygon(_torso_shape(SHOULDER_W + 1.0, TORSO_D + 1.5, Vector2(3, 4)), MapData.shadow_color(0.3))
 	var bs := step_scale()
 	var xf := Vector2(bs, bs)
 	draw_set_transform(Vector2.ZERO, 0.0, xf)
-	_draw_legs()
+	if SHOW_HANDS_FEET:
+		_draw_legs()
 	# Shoulders show either side of the hat (drawing only; the collision circle is unchanged).
-	_draw_torso()
-	_draw_arms()
+	if SHOW_HANDS_FEET:
+		_draw_arms(true)  # hanging hands, hidden under the shoulders until they swing out
+	if SHOW_SHOULDERS:
+		_draw_torso()
+	if SHOW_HANDS_FEET:
+		_draw_arms(false)  # arms reaching out (punch, gun) go over the body
 	if weapon == "none":
-		_draw_fists()
+		if SHOW_HANDS_FEET:
+			_draw_fists()
+	elif _revolver != null and weapon == "pistol":
+		pass  # the revolver is the animated sprite from weapons.tscn (see _sync_revolver)
 	elif weapon_drawn:
 		var hold := facing.orthogonal() * 9.0 + facing * 2.0
 		if Weapons.draw_held_image(self, weapon, facing, hold, bs):
@@ -1220,6 +1831,84 @@ func _draw() -> void:
 	if _hurt_flash > 0.0:
 		draw_circle(Vector2.ZERO, 11.0, Color(1, 0.1, 0.1, _hurt_flash * 2.0))
 	draw_set_transform_matrix(Transform2D.IDENTITY)
+
+
+# ---------------------------------------------------------------- animated revolver (scenes/weapons.tscn)
+
+const WEAPONS_SCENE := "res://scenes/weapons.tscn"
+const REV_GRIP := Vector2(30, 39)  # pixel of the 64x64 frame that sits in the hand
+const REV_SCALE := 0.65
+const REV_REACH := 11.0
+const REV_SIDE := 6.0
+const REV_HOLSTER_SIDE := 13.0   # holstered: this far to the player's right
+const REV_HOLSTER_REACH := 0.0   # holstered: this far forward (negative = back)
+const REV_MOVE_TIME := 0.3       # seconds to slide between the holster and the hand
+var _revolver: AnimatedSprite2D
+var _rev_state := ""
+var _rev_blend := 0.0  # 0 = at the holster, 1 = in the hand
+
+
+func _setup_revolver() -> void:
+	if not ResourceLoader.exists(WEAPONS_SCENE):
+		return
+	var holder := (load(WEAPONS_SCENE) as PackedScene).instantiate()
+	_revolver = holder.get_node_or_null("Revolver") as AnimatedSprite2D
+	if _revolver == null:
+		holder.queue_free()
+		return
+	_revolver.sprite_frames.set_animation_loop("holster draw", false)  # play once, hold the last frame
+	_revolver.centered = false
+	_revolver.offset = -REV_GRIP
+	_revolver.visible = false
+	add_child(holder)
+
+
+## Holstered (walking about): the "holster" animation, or the first frame of "holster draw" if
+## there is no such animation. Gun drawn (targeting, shooting, combat): plays "holster draw".
+## Putting it away plays "holster draw" backwards.
+func _sync_revolver(delta: float) -> void:
+	if _revolver == null:
+		return
+	var show_it := weapon == "pistol"
+	_revolver.visible = show_it
+	if not show_it:
+		_rev_state = ""
+		_rev_blend = 1.0 if weapon_drawn else 0.0
+		return
+	var bs := step_scale()
+	var right := Vector2(-facing.y, facing.x)
+	# Holstered it sits at the player's right side; drawing slides it forward into the hand.
+	_rev_blend = move_toward(_rev_blend, 1.0 if weapon_drawn else 0.0, delta / REV_MOVE_TIME)
+	var holstered_at := right * REV_HOLSTER_SIDE + facing * REV_HOLSTER_REACH
+	var drawn_at := facing * REV_REACH + right * REV_SIDE
+	_revolver.position = holstered_at.lerp(drawn_at, smoothstep(0.0, 1.0, _rev_blend)) * bs
+	_revolver.rotation = facing.angle() + PI * 0.5
+	_revolver.scale = Vector2(REV_SCALE, REV_SCALE) * bs
+	var want := "drawn" if weapon_drawn else "holster"
+	if want == _rev_state:
+		return
+	var frames := _revolver.sprite_frames
+	var last := frames.get_frame_count("holster draw") - 1
+	var first_time := _rev_state == ""
+	_rev_state = want
+	if want == "drawn":
+		_revolver.animation = &"holster draw"
+		if first_time:
+			_revolver.frame = last
+		else:
+			_revolver.play(&"holster draw")
+	elif frames.has_animation("holster"):
+		_revolver.play(&"holster")
+	else:
+		_revolver.animation = &"holster draw"
+		if first_time:
+			_revolver.frame = 0
+		else:
+			_revolver.play_backwards(&"holster draw")
+
+
+func _process(delta: float) -> void:
+	_sync_revolver(delta)
 
 
 ## Put-away gun: a revolver in a holster on the right hip, long guns slung across the back.
@@ -1248,14 +1937,43 @@ func step_scale() -> float:
 	return 1.0 + STEP_PULSE * _step_amount * absf(sin(_step_phase))
 
 
-## Draws the selected hat or hair turned to `facing`, with a face dot peeking out the front.
+## Draws the selected hat or hair turned to `facing`.
 func _draw_hat() -> void:
 	var bs := step_scale()
 	HeadArt.draw(self, head_style, Vector2.ZERO, facing.angle(), bs)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2(bs, bs))  # HeadArt.draw resets the transform
-	var face := facing * (HeadArt.front(head_style) - 0.3)
-	draw_circle(face, 2.2, HeadArt.face_color(head_style))
-	draw_arc(face, 2.2, 0.0, TAU, 10, Color(0.12, 0.08, 0.04, 0.9), 1.0)
+
+
+func set_shirt_color(c: Color) -> void:
+	shirt_color = c
+	queue_redraw()
+
+
+## Profile picture: the character from above (shoulders, vest, head) centred on `c`, facing up,
+## using the current head style and shirt colour. `s` scales it (1 = in-game size).
+static func draw_portrait(ci: CanvasItem, c: Vector2, s: float) -> void:
+	var shape := func(w: float, d: float, back: float) -> PackedVector2Array:
+		var pts := PackedVector2Array()
+		var e := 2.0 / 2.8
+		for i in 32:
+			var a := TAU * float(i) / 32.0
+			var co := cos(a)
+			var sn := sin(a)
+			var y := -signf(co) * pow(absf(co), e) * d * (1.0 if co > 0.0 else 0.85) + back
+			pts.append(c + Vector2(signf(sn) * pow(absf(sn), e) * w, y) * s)
+		return pts
+	var body: PackedVector2Array = shape.call(SHOULDER_W, TORSO_D, 0.0)
+	ci.draw_colored_polygon(body, shirt_color)
+	for side in [-1.0, 1.0]:
+		ci.draw_circle(c + Vector2((SHOULDER_W - 3.0) * side, 0) * s, 3.4 * s, shirt_color.darkened(0.25))
+		ci.draw_circle(c + Vector2((SHOULDER_W - 3.2) * side, -0.6) * s, 2.4 * s, shirt_color)
+	var vest: PackedVector2Array = shape.call(SHOULDER_W - 4.5, TORSO_D - 0.4, 0.0)
+	ci.draw_colored_polygon(vest, VEST)
+	ci.draw_colored_polygon(shape.call(SHOULDER_W - 5.5, TORSO_D - 2.5, 1.8), VEST_DARK)
+	ci.draw_polyline(vest + PackedVector2Array([vest[0]]), VEST_DARK, 1.0 * s)
+	ci.draw_polyline(body + PackedVector2Array([body[0]]), OUTLINE, 1.5 * s)
+	HeadArt.draw(ci, head_style, c, -PI * 0.5, s)
+	ci.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 func set_head(idx: int) -> void:

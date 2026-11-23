@@ -472,7 +472,7 @@ const WATER_EDGE := {
 func _add_water_edge(holder: Node2D, poly: Polygon2D, type: String, pts: PackedVector2Array) -> void:
 	var e: Dictionary = WATER_EDGE[type]
 	# Bank: lines centred on the edge, drawn under the water so only the outer half shows.
-	holder.add_child(_edge_line(pts, 34.0, Color(0, 0, 0, 0.22)))
+	holder.add_child(_edge_line(pts, 34.0, MapData.shadow_color(0.22)))
 	holder.add_child(_edge_line(pts, 28.0, e["bank"]))
 	holder.add_child(_edge_line(pts, 14.0, Color(e["bank"]).lightened(0.15)))
 	# Pebbles scattered just outside the edge (seeded from the shape so they don't change on rebuild).
@@ -497,7 +497,7 @@ func _add_water_edge(holder: Node2D, poly: Polygon2D, type: String, pts: PackedV
 			stones.append([p, rng.randf_range(1.6, 3.6), Color(e["pebble_a"]).lerp(e["pebble_b"], rng.randf())])
 	pebbles.draw.connect(func() -> void:
 		for s in stones:
-			pebbles.draw_circle(s[0] + Vector2(0.8, 1.0), s[1], Color(0, 0, 0, 0.3))
+			pebbles.draw_circle(s[0] + Vector2(0.8, 1.0), s[1], MapData.shadow_color(0.3))
 			pebbles.draw_circle(s[0], s[1], s[2])
 			pebbles.draw_circle(s[0] - Vector2(0.5, 0.6), s[1] * 0.45, Color(s[2]).lightened(0.25)))
 	holder.add_child(pebbles)
@@ -669,7 +669,7 @@ func _add_wall_piece(pts: PackedVector2Array, closed: bool, width: float, style:
 		edge = Color(0.1, 0.06, 0.03)
 		col_body = Color(0.42, 0.27, 0.15)
 		hi = Color(0.58, 0.4, 0.23)
-	_walls.add_child(_wall_line(pts, closed, width + 8.0, Color(0, 0, 0, 0.28), Vector2(5, 7), flat_ends))
+	_walls.add_child(_wall_line(pts, closed, width + 8.0, MapData.shadow_color(0.28), Vector2(5, 7), flat_ends))
 	_walls.add_child(_wall_line(pts, closed, width + 5.0, edge, Vector2.ZERO, flat_ends))
 	_walls.add_child(_wall_line(pts, closed, width, col_body, Vector2.ZERO, flat_ends))
 	_walls.add_child(_wall_line(pts, closed, width * 0.4, hi, Vector2.ZERO, flat_ends))
@@ -742,7 +742,7 @@ func rebuild_props() -> void:
 				var a := TAU * float(i) / 8.0
 				occ_pts.append(Vector2(cos(a), sin(a)) * solid * 0.9)
 		if occ_pts.size() > 0:
-			if not def.get("no_shadow", false):  # low props (stumps) don't block light
+			if not def.get("no_shadow", false) and not def.get("low", false):  # low props (stumps, crates) don't block light
 				var occ := OccluderPolygon2D.new()
 				occ.polygon = occ_pts
 				var lo := LightOccluder2D.new()
@@ -760,6 +760,9 @@ func rebuild_props() -> void:
 					circ.radius = solid
 					cs.shape = circ
 				body.add_child(cs)
+				if def.get("low", false):
+					# Low cover (crates, barrels...): blocks walking but not sight or shots.
+					body.collision_layer = Projectile.LOW_MASK
 				node.add_child(body)
 	_restack_props()
 	rebuild_lights()
@@ -811,6 +814,8 @@ func rebuild_npcs() -> void:
 		node.patrol = n["patrol"]
 		node.head = int(n.get("head", -1))
 		node.bounty = bool(n.get("bounty", false))
+		node.guard = bool(n.get("guard", false))
+		node.guard_dir = float(n.get("guard_dir", 90.0))
 		node.max_hp = maxi(int(n.get("hp", NpcNode.MAX_HP)), 1)
 		node.hp = node.max_hp
 		node.animate = physics_enabled
@@ -1007,6 +1012,7 @@ uniform float max_d = 40.0;
 uniform float round_roof = 0.0;
 uniform vec2 long_axis = vec2(1.0, 0.0);  // unit vector along the roof's longer side (round roofs)
 uniform vec2 axis_range = vec2(0.0, 1.0); // roof extent along long_axis
+uniform vec2 short_range = vec2(0.0, 1.0); // roof extent across the short side (round roofs)
 uniform float rib_count = 0.0;            // evenly spaced support ribs across the roof (2 = at 1/3 and 2/3)
 uniform vec2 light_dir = vec2(-0.55, -0.83);
 
@@ -1070,9 +1076,15 @@ void fragment() {
 	vec3 col;
 	if (round_roof > 0.5) {
 		// Barrel / curved roof: surface tilts away from the crown, so shading eases off toward the middle.
-		float tilt = 1.0 - clamp(d1 / max_d, 0.0, 1.0);
-		col = tex.rgb * (1.0 + 0.45 * lit * tilt);
-		col *= mix(0.78, 1.0, smoothstep(0.0, max_d, d1));
+		// The arch spans the short side only, so shading depends just on the position across the
+		// roof (c = -1 at one long eave, 0 at the crown, +1 at the other). Nothing changes along
+		// the length, so the short ends stay smooth with no angled hip facets.
+		vec2 short_axis = vec2(-long_axis.y, long_axis.x);
+		float slen = max(short_range.y - short_range.x, 1.0);
+		float c = clamp((dot(wpos, short_axis) - short_range.x) / slen * 2.0 - 1.0, -1.0, 1.0);
+		float side = dot(short_axis, normalize(light_dir));
+		col = tex.rgb * (1.0 + 0.45 * side * c);
+		col *= mix(0.78, 1.0, sqrt(max(1.0 - c * c, 0.0)));
 		if (rib_count > 0.5) {
 			// Support hoops: shaded lines across the roof (parallel to the short side) at 1/3, 2/3...
 			float len = max(axis_range.y - axis_range.x, 1.0);
@@ -1136,6 +1148,13 @@ func _roof_shaded_material(pts: PackedVector2Array, round_roof: bool, ribs: int 
 	for p in pts:
 		lo = minf(lo, p.dot(axis))
 		hi = maxf(hi, p.dot(axis))
+	var short_axis := Vector2(-axis.y, axis.x)
+	var slo := INF
+	var shi := -INF
+	for p in pts:
+		slo = minf(slo, p.dot(short_axis))
+		shi = maxf(shi, p.dot(short_axis))
+	m.set_shader_parameter("short_range", Vector2(slo, shi))
 	m.set_shader_parameter("long_axis", axis)
 	m.set_shader_parameter("axis_range", Vector2(lo, hi))
 	m.set_shader_parameter("rib_count", float(ribs))
@@ -1183,7 +1202,7 @@ func rebuild_roofs() -> void:
 		var shadow := Polygon2D.new()
 		shadow.polygon = pts
 		shadow.position = Vector2(9, 12)
-		shadow.color = Color(0, 0, 0, 0.35)
+		shadow.color = MapData.shadow_color(0.35)
 		var sm := _roof_material()
 		shadow.material = sm
 		mats.append(sm)

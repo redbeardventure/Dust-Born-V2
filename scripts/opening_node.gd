@@ -135,7 +135,7 @@ func _draw_door() -> void:
 	# Door leaf, hinged at the left end.
 	draw_set_transform(Vector2(-w * 0.5 + 1.0, 0), _angle, Vector2.ONE)
 	var leaf := Rect2(0, -t * 0.38, w - 2.0, t * 0.76)
-	draw_rect(Rect2(leaf.position + Vector2(1.5, 2.5), leaf.size), Color(0, 0, 0, 0.3))
+	draw_rect(Rect2(leaf.position + Vector2(1.5, 2.5), leaf.size), MapData.shadow_color(0.3))
 	draw_rect(leaf, wood)
 	draw_rect(Rect2(leaf.position, Vector2(leaf.size.x, leaf.size.y * 0.4)), wood_hi)
 	for i in range(1, 4):

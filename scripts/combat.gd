@@ -5,11 +5,13 @@ extends Node
 ## Starts when a hostile NPC can see the player, or when the player targets a hostile NPC.
 ## Everyone involved (the player and every hostile NPC that can see them) rolls 1d20 for
 ## initiative; the highest roll goes first. While combat is on, the world waits between turns:
-##  - Player turn: move up to Player.COMBAT_MOVE pixels, then take one action (one shot, or a reload).
-##    The turn ends by itself right after the action, once the full movement has been walked,
-##    or with the End turn button.
+##  - Player turn: either take one action (one shot, or a reload), or run to one of the highlighted
+##    cover spots within Player.COMBAT_MOVE pixels (running uses the whole turn). The turn ends by
+##    itself right after the action or the run, or with the End turn button.
 ##  - NPC turn: shoots if it has a gun and a clear shot in range (reloads when empty), otherwise
-##    steps closer; unarmed NPCs punch when next to the player.
+##    steps closer; unarmed NPCs punch when next to the player. An NPC that has noticed the player
+##    may instead YELL FOR HELP (once per fight) when other hostiles are within twice its hearing
+##    range: they all join the fight (see _try_yell).
 ## New hostiles that spot the player join at the start of the next round. Combat ends when every
 ## enemy is down, when none of them can see the player any more, or when the player is knocked out.
 
@@ -27,6 +29,11 @@ var order: Array = []
 var turn := 0
 var round_num := 0
 
+var _sneaking := false  # player-initiated fight where nobody has noticed the player yet
+var _idle_phase := false  # unaware NPCs are taking their small move between the player's turns
+var _idle_time := 0.0
+var _reacting = null      # NPC taking its instant "spotted you" attack (untyped: may be freed)
+var _react_queue: Array = []
 var _ambush_round := false  # the player's first turn gets the surprise bonus action
 var _ambush_grace := false
 var _wait := 0.0
@@ -35,6 +42,7 @@ var _rng := RandomNumberGenerator.new()
 
 
 func _ready() -> void:
+	add_to_group("combat")  # Projectile.fire tells us about gunshots (hearing)
 	_rng.randomize()
 	if player != null:
 		player.respawned.connect(func() -> void:
@@ -47,10 +55,14 @@ func _exit_tree() -> void:
 
 
 func is_player_turn() -> bool:
-	return active and not order.is_empty() and order[turn]["node"] == player
+	return active and not _idle_phase and _reacting == null and not order.is_empty() and order[turn]["node"] == player
 
 
 func current_name() -> String:
+	if _idle_phase:
+		return "The enemy"
+	if is_instance_valid(_reacting):
+		return (_reacting as NpcNode).npc_name
 	return str(order[turn]["name"]) if active and not order.is_empty() else ""
 
 
@@ -64,10 +76,22 @@ func _process(delta: float) -> void:
 		return
 	if _prune():
 		return
+	if _idle_phase:
+		_idle_time -= delta
+		if _idle_time <= 0.0:
+			_end_idle_phase()
+		return
+	if _reacting != null:
+		_wait -= delta
+		if _wait <= 0.0:
+			_next_reaction()
+		return
 	if is_player_turn():
 		# Ends by itself once the shot / reload is used (any movement left is given up),
 		# or once the full movement range has been walked (the action is then given up).
-		if not player.action_left or player.move_left < 1.0:
+		if player.is_running():
+			_end_delay = -1.0  # still running to cover: the turn ends once you get there
+		elif not player.action_left or player.move_left < 1.0:
 			if _end_delay < 0.0:
 				_end_delay = PLAYER_END_DELAY
 			_end_delay -= delta
@@ -79,9 +103,29 @@ func _process(delta: float) -> void:
 			next_turn()
 
 
+## The player may call the fight off only while no enemy is attacking: none of the enemies in the
+## fight has noticed the player (alerted) or can spot them right now.
+func can_player_end() -> bool:
+	if not active or _idle_phase or player.is_running():
+		return false
+	for e in order:
+		var npc := _npc_of(e)
+		if npc != null and _is_enemy(npc) and (npc.alerted or npc.can_spot(player, JOIN_RANGE)):
+			return false
+	return true
+
+
+## End combat button.
+func player_end_combat() -> void:
+	if can_player_end():
+		# Drop the target too: a targeted hostile in sight would start the fight again next frame.
+		player.set_target(null)
+		end_combat("You back off - combat over")
+
+
 ## End turn button.
 func end_player_turn() -> void:
-	if is_player_turn():
+	if is_player_turn() and not _idle_phase:
 		next_turn()
 
 
@@ -96,7 +140,7 @@ func _trigger() -> NpcNode:
 		return t
 	for n in get_tree().get_nodes_in_group("npcs"):
 		var npc := n as NpcNode
-		if npc != null and _is_enemy(npc) and npc.can_see(player, JOIN_RANGE):
+		if npc != null and _is_enemy(npc) and npc.can_spot(player, JOIN_RANGE):
 			return npc
 	return null
 
@@ -115,7 +159,29 @@ func start_ambush(surprised: Array) -> void:
 	start(surprised[0], surprised)
 
 
-func start(trigger: NpcNode, surprised: Array = []) -> void:
+## The player starts the fight (Attack button). They always act first. Hostile NPCs that have not
+## noticed them (not shot at, not looking their way) don't get to act: the player keeps taking
+## turns, e.g. to sneak up behind one, until someone notices them.
+func start_player_initiated() -> void:
+	if active or player == null or player.hp <= 0:
+		return
+	var foes: Array = []
+	var t: NpcNode = player.target as NpcNode if is_instance_valid(player.target) else null
+	# The player can shoot over crates and barrels, so a fight can be started from behind one.
+	if t != null and _is_enemy(t) and t.can_see(player, JOIN_RANGE, true):
+		foes.append(t)
+	for n in get_tree().get_nodes_in_group("npcs"):
+		var npc := n as NpcNode
+		if npc != null and not foes.has(npc) and _is_enemy(npc) and npc.can_see(player, JOIN_RANGE, true):
+			foes.append(npc)
+	if foes.is_empty():
+		message.emit("No hostile NPC in sight")
+		return
+	_sneaking = true
+	start(foes[0], [], true, foes)
+
+
+func start(trigger: NpcNode, surprised: Array = [], player_first := false, extra_foes: Array = []) -> void:
 	active = true
 	round_num = 1
 	turn = 0
@@ -126,8 +192,16 @@ func start(trigger: NpcNode, surprised: Array = []) -> void:
 	_add(trigger, trigger.npc_name)
 	for n in get_tree().get_nodes_in_group("npcs"):
 		var npc := n as NpcNode
-		if npc != trigger and _is_enemy(npc) and npc.can_see(player, JOIN_RANGE):
+		if npc != trigger and _is_enemy(npc) and npc.can_spot(player, JOIN_RANGE):
 			_add(npc, npc.npc_name)
+	for f in extra_foes:
+		if is_instance_valid(f) and not _has(f):
+			_add(f, (f as NpcNode).npc_name)
+	if not player_first:
+		for e in order:  # everyone who joined on their own has noticed the player
+			var npc := _npc_of(e)
+			if npc != null:
+				npc.alerted = true
 	for s in surprised:  # surprised NPCs not already in the order still join, with a 0 roll
 		if is_instance_valid(s) and not _has(s):
 			_add(s, (s as NpcNode).npc_name)
@@ -135,10 +209,17 @@ func start(trigger: NpcNode, surprised: Array = []) -> void:
 		if surprised.has(e["node"]):
 			e["roll"] = 0
 	_sort()
+	if player_first:
+		for i in order.size():
+			if order[i]["node"] == player:
+				order.insert(0, order.pop_at(i))
+				break
 	var parts: Array = []
 	for e in order:
 		parts.append("%s %d" % [e["name"], e["roll"]])
-	if surprised.is_empty():
+	if player_first:
+		message.emit("You strike first! Hostiles that haven't noticed you can't act yet.")
+	elif surprised.is_empty():
 		message.emit("Combat! Initiative (d20): " + ", ".join(parts))
 	else:
 		message.emit("Ambush! Caught by surprise. Initiative: " + ", ".join(parts) + ". You get 2 actions.")
@@ -152,7 +233,13 @@ func end_combat(text: String) -> void:
 		var npc := _npc_of(e)
 		if npc != null:
 			npc.set_turn_marker(false)
+			npc.alerted = false  # survivors lose track of the player
+			npc.yelled = false   # may yell for help again in the next fight
 	active = false
+	_sneaking = false
+	_idle_phase = false
+	_reacting = null
+	_react_queue.clear()
 	order.clear()
 	NpcNode.combat_mode = false
 	player.leave_combat()
@@ -208,8 +295,12 @@ func _start_turn() -> void:
 			player.extra_actions = 1  # surprise bonus: 2 actions this first turn
 	else:
 		var npc := node as NpcNode
-		npc.take_combat_turn(player)
-		_wait = NPC_TURN_TIME
+		if _try_yell(npc):
+			_wait = YELL_TURN_TIME  # the yell is this NPC's whole turn
+		else:
+			npc.combat_walk_time = 0.0
+			npc.take_combat_turn(player)
+			_wait = maxf(NPC_TURN_TIME, npc.combat_walk_time + 0.3)
 	changed.emit()
 
 
@@ -218,6 +309,29 @@ func next_turn() -> void:
 		return
 	if order[turn]["node"] == player:
 		player.end_turn()
+		if _sneaking:
+			var spotters := _spotters()
+			if _anyone_noticed():
+				_sneaking = false
+				message.emit("You've been noticed!")
+				if _react(spotters):
+					return  # whoever spotted you shoots first, then the order carries on
+			else:
+				# Nobody noticed: the unaware NPCs carry on a little (walk on / keep turning),
+				# then the player acts again. The round doesn't advance.
+				_idle_time = 0.5
+				for e in order:
+					var npc := _npc_of(e)
+					if npc != null and _is_enemy(npc):
+						_idle_time = maxf(_idle_time, npc.idle_step() + 0.3)
+				_idle_phase = true
+				changed.emit()
+				return
+	_advance()
+
+
+## Moves on to the next entry in the initiative order (a new round after the last one).
+func _advance() -> void:
 	turn += 1
 	if turn >= order.size():
 		turn = 0
@@ -227,13 +341,69 @@ func next_turn() -> void:
 	_start_turn()
 
 
+## The unaware NPCs have finished their small move: if one now sees the player the fight goes on
+## normally, otherwise the player takes another turn.
+func _end_idle_phase() -> void:
+	_idle_phase = false
+	var spotters := _spotters()
+	if _anyone_noticed():
+		_sneaking = false
+		message.emit("You've been noticed!")
+		if not _react(spotters):
+			_advance()
+	else:
+		message.emit("Unnoticed - take another turn")
+		_start_turn()
+
+
+## Enemies in the fight that have the player in their view arc with a clear line right now.
+func _spotters() -> Array:
+	var out: Array = []
+	for e in order:
+		var npc := _npc_of(e)
+		if npc != null and _is_enemy(npc) and npc.can_spot(player, JOIN_RANGE):
+			out.append(npc)
+	return out
+
+
+## The enemies that just spotted the player react at once with an attack (one each, in turn),
+## before the initiative order continues. Returns false when there is nobody to react.
+func _react(spotters: Array) -> bool:
+	_react_queue = spotters.duplicate()
+	if _react_queue.is_empty():
+		return false
+	_next_reaction()
+	return true
+
+
+func _next_reaction() -> void:
+	while not _react_queue.is_empty():
+		var npc = _react_queue.pop_front()  # untyped: may have been freed
+		if not is_instance_valid(npc) or not _is_enemy(npc):
+			continue
+		_reacting = npc
+		for e in order:
+			var other := _npc_of(e)
+			if other != null:
+				other.set_turn_marker(other == npc)
+		message.emit("%s spots you and attacks!" % (npc as NpcNode).npc_name)
+		(npc as NpcNode).combat_walk_time = 0.0
+		(npc as NpcNode).take_combat_turn(player)
+		_wait = maxf(NPC_TURN_TIME, (npc as NpcNode).combat_walk_time + 0.3)
+		changed.emit()
+		return
+	# Everyone has reacted: carry on from the player's place in the order.
+	_reacting = null
+	_advance()
+
+
 ## Start of a new round: hostiles that have spotted the player join (with their own roll), and the
 ## fight ends if no enemy can see the player any more. Returns false when combat ended.
 func _new_round() -> bool:
 	var joined: Array = []
 	for n in get_tree().get_nodes_in_group("npcs"):
 		var npc := n as NpcNode
-		if npc != null and not _has(npc) and _is_enemy(npc) and npc.can_see(player, JOIN_RANGE):
+		if npc != null and not _has(npc) and _is_enemy(npc) and npc.can_spot(player, JOIN_RANGE):
 			_add(npc, npc.npc_name)
 			joined.append("%s %d" % [npc.npc_name, order[order.size() - 1]["roll"]])
 	if not joined.is_empty():
@@ -245,6 +415,15 @@ func _new_round() -> bool:
 		if npc != null and _is_enemy(npc) and npc.can_see(player, JOIN_RANGE):
 			seen = true
 			break
+	if not seen:
+		# Enemies that know about you keep hunting: behind a wall, or still within their hearing
+		# circle (e.g. they joined because they heard a shot and haven't seen you yet).
+		for e in order:
+			var npc := _npc_of(e)
+			if npc != null and _is_enemy(npc) and npc.alerted \
+					and (player.in_wall_cover() or npc.hears(player.global_position)):
+				seen = true
+				break
 	if _ambush_grace:
 		_ambush_grace = false  # ambushed NPCs may not see you yet; give round 2 a chance
 		seen = true
@@ -252,6 +431,110 @@ func _new_round() -> bool:
 		end_combat("You slipped away")
 		return false
 	return true
+
+
+## A gun went off at `origin` (fired by `shooter`: the player or an NPC). Every hostile NPC whose
+## hearing circle contains the shot is alerted, turns toward the player and joins the fight with
+## its own initiative roll. If no fight is on yet, the shot starts one.
+func on_shot_heard(origin: Vector2, shooter: Node) -> void:
+	if player == null or player.hp <= 0:
+		return
+	var heard: Array = []
+	for n in get_tree().get_nodes_in_group("npcs"):
+		var npc := n as NpcNode
+		if npc == null or npc == shooter or not _is_enemy(npc) or not npc.hears(origin):
+			continue
+		npc.alerted = true
+		npc.look_toward(player.global_position)
+		if not _has(npc):
+			heard.append(npc)
+	if heard.is_empty():
+		return
+	if not active:
+		# Started outside a fight (e.g. a shot at a barrel): begin combat once this shot is done.
+		call_deferred("_start_from_noise", heard)
+		return
+	_join_mid_fight(heard, "Heard the shot and joins the fight (d20): ")
+
+
+## Adds `npcs` to a fight that is already on (each rolls initiative) without moving the turn off
+## whoever is acting now.
+func _join_mid_fight(npcs: Array, text: String) -> void:
+	var current = order[turn]["node"]  # keep the turn pointer on whoever is acting now
+	var names: Array = []
+	for npc in npcs:
+		_add(npc, (npc as NpcNode).npc_name)
+		names.append("%s %d" % [(npc as NpcNode).npc_name, order[order.size() - 1]["roll"]])
+	_sort()
+	for i in order.size():
+		if order[i]["node"] == current:
+			turn = i
+			break
+	if _sneaking:
+		_sneaking = false  # the noise gave you away
+	message.emit(text + ", ".join(names))
+	changed.emit()
+
+
+# ---------------------------------------------------------------- yell for help
+
+const YELL_CHANCE := 0.5      # chance an engaged NPC yells (on its turn) when help is in range
+const YELL_TURN_TIME := 2.0   # the yell takes the NPC's turn; this long so the effect can be seen
+
+
+## Hostile NPCs not yet in the fight inside `npc`'s yell circle (twice its hearing circle).
+func _yell_listeners(npc: NpcNode) -> Array:
+	var out: Array = []
+	for n in get_tree().get_nodes_in_group("npcs"):
+		var other := n as NpcNode
+		if other == null or other == npc or not _is_enemy(other) or _has(other):
+			continue
+		if other.global_position.distance_to(npc.global_position) <= NpcNode.YELL_RANGE:
+			out.append(other)
+	return out
+
+
+## On its turn an NPC that is engaged with the player (alerted) may YELL FOR HELP instead of
+## attacking, once per fight, when other hostiles are within yelling distance. Everyone inside the
+## yell circle is alerted, turns toward the player and joins the fight. Returns true if it yelled.
+func _try_yell(npc: NpcNode) -> bool:
+	if npc.yelled or not npc.alerted:
+		return false
+	var listeners := _yell_listeners(npc)
+	if listeners.is_empty() or _rng.randf() > YELL_CHANCE:
+		return false
+	npc.yelled = true
+	npc.look_toward(player.global_position)
+	for l in listeners:
+		(l as NpcNode).alerted = true
+		(l as NpcNode).look_toward(player.global_position)
+	YellEffect.spawn(get_tree().current_scene, npc, NpcNode.YELL_RANGE, listeners)
+	_join_mid_fight(listeners, "%s YELLS FOR HELP! Joining the fight (d20): " % npc.npc_name)
+	return true
+
+
+func _start_from_noise(heard: Array) -> void:
+	if active:
+		return
+	var alive: Array = []
+	for h in heard:
+		if is_instance_valid(h) and _is_enemy(h):
+			alive.append(h)
+	if alive.is_empty():
+		return
+	start(alive[0], [], false, alive)
+
+
+## True when an enemy in the fight has noticed the player: it was shot at / hit, or the player is
+## now in its view arc with a clear line. Noticing sticks (NpcNode.alerted).
+func _anyone_noticed() -> bool:
+	var noticed := false
+	for e in order:
+		var npc := _npc_of(e)
+		if npc != null and _is_enemy(npc) and (npc.alerted or npc.can_spot(player, JOIN_RANGE)):
+			npc.alerted = true
+			noticed = true
+	return noticed
 
 
 ## Drops dead NPCs from the order, keeping the current turn pointing at the right entry.
