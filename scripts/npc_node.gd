@@ -27,10 +27,15 @@ var patrol := PackedVector2Array()
 var animate := false
 var hp := MAX_HP
 var max_hp := MAX_HP  # set from the map (the editor's Health field)
+var move_tiles := MapData.DEFAULT_NPC_SPEED  # "Speed": tiles it can move in one action (editor field)
+var actions_per_turn := 1  # actions (shoot / bite / move) in each of its combat turns
+var xp := 0  # XP the player earns for killing this NPC / animal (the editor's XP field)
 
 ## Guard: stands still (no patrol) and keeps looking in `guard_dir` (degrees, 0 = east/right,
 ## 90 = south/down) until it is engaged; afterwards it turns back to that direction.
 var guard := false
+## Call for help (editor toggle, default off): only NPCs with this on yell for help in a fight.
+var call_help := false
 var guard_dir := 90.0
 
 ## Has noticed the player (saw them, or was shot at / hit). Un-alerted NPCs can be sneaked up on:
@@ -58,6 +63,7 @@ func _ready() -> void:
 		_wait = 0.0
 		_facing = guard_vec()
 		_aim = _facing
+	add_child(MapRenderer.character_occluder())  # casts shadows from lights that have "NPC Shadow" on
 	set_process(animate)
 	set_physics_process(animate)
 	if animate:
@@ -77,6 +83,10 @@ func _process(delta: float) -> void:
 		queue_redraw()
 	if _hurt_flash > 0.0:
 		_hurt_flash = maxf(_hurt_flash - delta, 0.0)
+		queue_redraw()
+	var pull_before := _gun_pull
+	_gun_pull = move_toward(_gun_pull, gun_pull_for(_facing), GUN_PULL_SPEED * delta)
+	if _gun_pull != pull_before:
 		queue_redraw()
 	if guard:
 		# Never wanders. Holds its post direction unless it is fighting the player (engaged in
@@ -141,7 +151,7 @@ func _physics_process(delta: float) -> void:
 		if _ammo < 0:
 			_ammo = int(w["mag"])
 		_cooldown = float(w["cooldown"]) * _rng.randf_range(1.0, 1.4)
-		Projectile.fire(get_tree().current_scene, weapon, global_position, _aim, self,
+		Projectile.fire(get_tree().current_scene, weapon, _shot_from(_aim), _aim, self,
 				Weapons.spread_mul_at(weapon, global_position.distance_to(foe.global_position)))
 		_ammo -= 1
 		if _ammo <= 0:
@@ -160,6 +170,11 @@ const COMBAT_MOVE := 140.0   # pixels an NPC can walk in one combat turn
 const COMBAT_WALK_SPEED := 90.0  # px/s while walking during a combat turn (lower = slower)
 const PUNCH_RANGE := 34.0
 const PUNCH_DAMAGE := 6
+
+## Pixels this NPC can move in one action (its Speed in tiles).
+func move_px() -> float:
+	return float(move_tiles) * Weapons.TILE
+
 
 ## Seconds the walk of the last combat turn takes (Combat waits for it).
 var combat_walk_time := 0.0
@@ -233,6 +248,38 @@ func can_see(foe: Node2D, max_dist: float, over_low := false) -> bool:
 	var q := PhysicsRayQueryParameters2D.create(global_position, foe.global_position, SIGHT_MASK if over_low else sight_mask())
 	var hit := get_world_2d().direct_space_state.intersect_ray(q)
 	return hit.is_empty() or hit["collider"] == foe
+
+
+## Close quarters: px the held weapon is drawn back along the facing so it stops short of the
+## player standing right in front of it (eased toward gun_pull_for() each frame).
+var _gun_pull := 0.0
+const GUN_PULL_SPEED := 160.0
+const GUN_BASE := 2.0  # the weapon starts this far in front of the body centre (see _draw)
+const PLAYER_BODY_R := 11.0
+
+
+## How far the weapon must come back (along `dir`) so its tip stays just in front of the player
+## instead of poking over or past them. 0 when the player isn't that close in front.
+func gun_pull_for(dir: Vector2) -> float:
+	if not animate or weapon == "none" or hp <= 0 or dir.length() < 0.5:
+		return 0.0
+	var foe := get_tree().get_first_node_in_group("player") as Node2D
+	if foe == null:
+		return 0.0
+	dir = dir.normalized()
+	var reach := GUN_BASE + Weapons.length(weapon)
+	var to := foe.global_position - global_position - dir.orthogonal() * 9.0  # weapon hand side
+	var along := to.dot(dir)
+	if along <= 0.0 or absf(to.cross(dir)) > PLAYER_BODY_R + 4.0:
+		return 0.0
+	return clampf(reach - (along - minf(PLAYER_BODY_R, Projectile.HIT_RADIUS - 2.0)), 0.0, reach - 3.0)
+
+
+## Where this NPC's shot along `dir` starts: from the body, moved back as far as the weapon is
+## drawn back, so a player pressed up against it isn't skipped by a shot spawning past them
+## (Projectile.fire places the shot 14 px ahead of `from`).
+func _shot_from(dir: Vector2) -> Vector2:
+	return global_position - dir.normalized() * gun_pull_for(dir)
 
 
 ## Turns to face `pos` straight away (used when the player shoots at this NPC, hit or miss).
@@ -373,7 +420,7 @@ func take_combat_turn(foe: Node2D) -> void:
 				_ammo = int(w["mag"])  # spends the turn reloading
 				_reloading = 0.8
 				return
-			Projectile.fire(get_tree().current_scene, weapon, global_position, _aim, self,
+			Projectile.fire(get_tree().current_scene, weapon, _shot_from(_aim), _aim, self,
 					Weapons.spread_mul_at(weapon, to.length()))
 			_ammo -= 1
 			return
@@ -393,7 +440,7 @@ func take_combat_turn(foe: Node2D) -> void:
 		var reach := float(Weapons.RANGED[weapon]["range"]) * 0.9
 		if to.length() > reach:
 			stop_at = reach
-	var step := minf(COMBAT_MOVE, to.length() - stop_at)
+	var step := minf(move_px(), to.length() - stop_at)
 	if step <= 4.0:
 		return
 	var dest := global_position + _aim * step
@@ -425,7 +472,7 @@ func _walk_to_sight(foe: Node2D) -> void:
 	for i in 24:
 		var dir := Vector2.RIGHT.rotated(TAU * float(i) / 24.0)
 		for f in [0.25, 0.5, 0.75, 1.0]:
-			var dist: float = COMBAT_MOVE * float(f)
+			var dist: float = move_px() * float(f)
 			var cand := global_position + dir * dist
 			var q := PhysicsRayQueryParameters2D.create(global_position, cand + dir * 12.0, SIGHT_MASK | 2 | Projectile.LOW_MASK)
 			if not space.intersect_ray(q).is_empty() or _water_at(cand):
@@ -514,13 +561,21 @@ func take_damage(amount: int, from: Node) -> void:
 	queue_redraw()
 
 
+## Direction of the last bullet that hit this NPC (set by Projectile; zero for non-bullet damage).
+var last_hit_dir := Vector2.ZERO
+
+
 ## Removes the NPC, leaving its loot (if any) on the ground where it fell.
 func _die() -> void:
+	DustPuff.spawn(get_tree().current_scene, global_position, last_hit_dir)
 	remove_from_group("combatants")
 	remove_from_group("npcs")
 	remove_from_group("bounty")
 	if loot != "none":
 		LootDrop.spawn(get_tree().current_scene, loot, global_position)
+	var player := get_tree().get_first_node_in_group("player")
+	if player != null and player.has_method("add_xp"):
+		player.call("add_xp", xp)
 	defeated.emit(self)
 	queue_free()
 
@@ -551,7 +606,8 @@ func _draw() -> void:
 	draw_circle(Vector2.ZERO, 10.0, col)
 	draw_arc(Vector2.ZERO, 10.0, 0.0, TAU, 20, Color("101820"), 2.0)
 	# Weapon points the way the NPC is facing.
-	Weapons.draw_held(self, weapon, _facing, _facing.orthogonal() * 9.0 + _facing * 2.0)
+	# (drawn back by _gun_pull when the player is right in front, so it doesn't poke over them)
+	Weapons.draw_held(self, weapon, _facing, _facing.orthogonal() * 9.0 + _facing * (GUN_BASE - _gun_pull))
 	# Head (hat or hair) over the body, with the face dot peeking out the front.
 	if head >= 0 and head < HeadArt.count():
 		HeadArt.draw(self, head, Vector2.ZERO, _facing.angle())

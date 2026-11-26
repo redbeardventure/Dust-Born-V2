@@ -7,10 +7,6 @@ const SAMPLE_THEMES := ["fantasy", "train", "desert", "snow", "town", "swamp", "
 var center: CenterContainer
 var menu_box: VBoxContainer
 var maps_panel: Control
-var shop_panel: Control
-var _gold_label: Label
-var _shop_buttons := {}  # weapon key -> toggle button
-var _bought: Array = []  # weapon keys picked on the purchase screen
 
 
 func _ready() -> void:
@@ -88,8 +84,7 @@ func _show_maps() -> void:
 	# Map currently open in the editor (may include unsaved changes).
 	if not MapData.working.is_empty():
 		_heading(list, "Current")
-		_button(list, "Continue: %s" % MapData.current_path.get_file().get_basename(), func() -> void:
-			_show_shop())
+		_button(list, "Continue: %s" % MapData.current_path.get_file().get_basename(), _play)
 
 	var saved := _saved_maps()
 	if not saved.is_empty():
@@ -127,91 +122,18 @@ func _play_file(path: String) -> void:
 		return
 	MapData.working = d
 	MapData.current_path = path
-	_show_shop()
+	_play()
 
 
 func _play_sample(theme: String) -> void:
 	MapData.working = SampleMap.create(theme)
 	# Own file name, so saving it later from the editor never overwrites another map.
 	MapData.current_path = MapData.MAP_DIR.path_join("%s_sample.json" % theme)
-	_show_shop()
-
-
-# ---------------------------------------------------------------- purchase screen
-
-## Shown after a map is chosen: spend the starting gold on weapons, then start the game.
-func _show_shop() -> void:
-	if maps_panel != null:
-		maps_panel.visible = false
-	if shop_panel != null:
-		shop_panel.queue_free()
-	_bought.clear()
-
-	var outer := VBoxContainer.new()
-	outer.custom_minimum_size = Vector2(380, 0)
-	outer.add_theme_constant_override("separation", 10)
-	center.add_child(outer)
-	shop_panel = outer
-
-	var title := Label.new()
-	title.text = "BUY WEAPONS"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 32)
-	outer.add_child(title)
-
-	_gold_label = Label.new()
-	_gold_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_gold_label.add_theme_font_size_override("font_size", 20)
-	_gold_label.add_theme_color_override("font_color", Color(1.0, 0.86, 0.35))
-	outer.add_child(_gold_label)
-
-	_shop_buttons.clear()
-	for key in Loadout.PRICES:
-		var b := Button.new()
-		b.toggle_mode = true
-		b.custom_minimum_size.y = 48
-		b.toggled.connect(_on_weapon_toggled.bind(key))
-		outer.add_child(b)
-		_shop_buttons[key] = b
-
-	_button(outer, "Start", _play)
-	_button(outer, "Back", func() -> void:
-		shop_panel.queue_free()
-		shop_panel = null
-		maps_panel.visible = true)
-	_refresh_shop()
-
-
-func _on_weapon_toggled(on: bool, key: String) -> void:
-	if on and not _bought.has(key):
-		_bought.append(key)
-	elif not on:
-		_bought.erase(key)
-	_refresh_shop()
-
-
-func _gold_left() -> int:
-	var left := Loadout.START_GOLD
-	for key in _bought:
-		left -= int(Loadout.PRICES[key])
-	return left
-
-
-## Updates the gold line and each weapon button; unaffordable weapons are disabled.
-func _refresh_shop() -> void:
-	var left := _gold_left()
-	_gold_label.text = "Gold: %d" % left
-	for key in _shop_buttons:
-		var b: Button = _shop_buttons[key]
-		var price := int(Loadout.PRICES[key])
-		var owned := _bought.has(key)
-		b.set_pressed_no_signal(owned)
-		b.text = "%s - %d gold%s" % [Loadout.NAMES[key], price, "  (bought)" if owned else ""]
-		b.disabled = not owned and price > left
+	_play()
 
 
 func _play() -> void:
-	Loadout.gold = _gold_left() if shop_panel != null else Loadout.START_GOLD
-	Loadout.weapons = _bought.duplicate()
+	Loadout.gold = Loadout.START_GOLD
+	Loadout.weapons = []
 	MapData.ensure_loaded()
 	get_tree().change_scene_to_file("res://scenes/game_view.tscn")

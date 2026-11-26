@@ -27,11 +27,17 @@ static func spawn(parent: Node, at: Vector2, facing: Vector2, count: int, kind: 
 		# Mostly sideways to the right and a little backwards, with some scatter.
 		var out := (right * randf_range(0.7, 1.0) - f * randf_range(0.0, 0.5)).normalized()
 		out = out.rotated(randf_range(-0.5, 0.5))
+		var speed := randf_range(45.0, 95.0)
+		var vh := randf_range(60.0, 110.0)
+		if kind == "wad":  # blown straight out of the barrel, a little flatter and faster
+			out = f.rotated(randf_range(-0.15, 0.15))
+			speed = randf_range(130.0, 200.0)
+			vh = randf_range(25.0, 55.0)
 		s._casings.append({
 			"pos": Vector2.ZERO,
-			"vel": out * randf_range(45.0, 95.0),
+			"vel": out * speed,
 			"h": 6.0,
-			"vh": randf_range(60.0, 110.0),
+			"vh": vh,
 			"rot": randf() * TAU,
 			"spin": randf_range(-18.0, 18.0),
 			"delay": i * 0.06,  # tipped out one after another, not all in one frame
@@ -76,6 +82,10 @@ func _draw() -> void:
 		var h: float = c["h"]
 		var p: Vector2 = c["pos"]
 		draw_circle(p + Vector2(0.8, 1.0), width * 0.8, Color(0, 0, 0, 0.25 * alpha))  # shadow on the ground
+		if _kind == "wad":  # scorched black-powder wad: a small dark, ragged clump
+			draw_circle(p - Vector2(0, h), 2.4, Color(0.95, 0.94, 0.9, alpha))
+			draw_circle(p - Vector2(0, h) + Vector2(0.9, -0.6), 1.4, Color(1.0, 1.0, 1.0, alpha))
+			continue
 		draw_set_transform(p - Vector2(0, h), c["rot"], Vector2.ONE)  # raised by its height above ground
 		draw_rect(Rect2(Vector2(-length * 0.5, -width * 0.5), Vector2(length, width)), Color(body, alpha))
 		draw_rect(Rect2(Vector2(length * 0.5 - 1.6, -width * 0.5), Vector2(1.6, width)), Color(cap, alpha))

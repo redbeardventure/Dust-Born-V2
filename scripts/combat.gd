@@ -100,7 +100,8 @@ func _process(delta: float) -> void:
 	else:
 		_wait -= delta
 		if _wait <= 0.0:
-			next_turn()
+			if not _npc_extra_action():
+				next_turn()
 
 
 ## The player may call the fight off only while no enemy is attacking: none of the enemies in the
@@ -301,12 +302,34 @@ func _start_turn() -> void:
 			npc.combat_walk_time = 0.0
 			npc.take_combat_turn(player)
 			_wait = maxf(NPC_TURN_TIME, npc.combat_walk_time + 0.3)
+			_extra_actions = npc.actions_per_turn - 1  # more actions follow, one after another
 	changed.emit()
+
+
+## Actions an NPC / animal still has to take in its current turn after the first one.
+var _extra_actions := 0
+
+
+## Takes the current NPC's next action of this turn, if it has one left. Returns true if it acted.
+func _npc_extra_action() -> bool:
+	if _extra_actions <= 0:
+		return false
+	_extra_actions -= 1
+	var npc := _npc_of(order[turn])
+	if npc == null or npc.hp <= 0 or not is_instance_valid(player):
+		_extra_actions = 0
+		return false
+	npc.combat_walk_time = 0.0
+	npc.take_combat_turn(player)
+	_wait = maxf(NPC_TURN_TIME, npc.combat_walk_time + 0.3)
+	changed.emit()
+	return true
 
 
 func next_turn() -> void:
 	if not active:
 		return
+	_extra_actions = 0
 	if order[turn]["node"] == player:
 		player.end_turn()
 		if _sneaking:
@@ -498,7 +521,7 @@ func _yell_listeners(npc: NpcNode) -> Array:
 ## attacking, once per fight, when other hostiles are within yelling distance. Everyone inside the
 ## yell circle is alerted, turns toward the player and joins the fight. Returns true if it yelled.
 func _try_yell(npc: NpcNode) -> bool:
-	if npc.yelled or not npc.alerted:
+	if not npc.call_help or npc.yelled or not npc.alerted:
 		return false
 	var listeners := _yell_listeners(npc)
 	if listeners.is_empty() or _rng.randf() > YELL_CHANCE:

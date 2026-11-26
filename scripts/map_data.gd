@@ -51,6 +51,25 @@ static var ROOFS: Dictionary = {
 	"roof_canvas_dark": {"label": "Weathered canvas (ribbed)", "shape": "round", "a": Color("8d826a"), "b": Color("b0a587"), "freq": 0.09, "outline": Color(0.2, 0.17, 0.1, 0.9), "planks": false, "ribs": 2, "speckle": 0.04},
 	"roof_canvas_blue": {"label": "Blue wagon tarp (curved)", "shape": "round", "a": Color("4c6b92"), "b": Color("7193bd"), "freq": 0.08, "outline": Color(0.12, 0.18, 0.3, 0.9), "planks": false, "ribs": 2, "speckle": 0.0},
 	"roof_sod": {"label": "Sod / turf", "a": Color("4a6024"), "b": Color("74893a"), "freq": 0.05, "outline": Color(0.1, 0.15, 0.05, 0.85), "planks": false, "speckle": 0.08},
+	# Chimney top: draw a small rectangle. "fit" stretches the texture over the roof's bounding box
+	# (instead of tiling it in world space) so the border and dark opening always line up.
+	"roof_chimney": {"label": "Chimney top", "shape": "flat", "fit": true, "chimney": 0.22, "a": Color("2e2e30"), "b": Color("4a4a4d"), "freq": 0.08, "outline": Color(0.05, 0.05, 0.06, 0.95), "planks": false, "speckle": 0.03},
+	"roof_scale_orange": {"label": "Fish-scale tiles: orange", "a": Color("b8501f"), "b": Color("e88a45"), "freq": 0.05, "outline": Color(0.28, 0.1, 0.04, 0.95), "planks": false, "scale": 16, "speckle": 0.0},
+	"roof_scale_slate": {"label": "Fish-scale slate: dark", "a": Color("2c2c2e"), "b": Color("4d4c4a"), "freq": 0.06, "outline": Color(0.04, 0.04, 0.04, 0.95), "planks": false, "scale": 32, "speckle": 0.02},
+	"roof_scale_brown": {"label": "Fish-scale shingles: brown", "a": Color("4a3326"), "b": Color("7a5a40"), "freq": 0.06, "outline": Color(0.08, 0.05, 0.03, 0.95), "planks": false, "scale": 16, "speckle": 0.02},
+	"roof_barrel_mossy": {"label": "Barrel tiles: mossy", "a": Color("a24c28"), "b": Color("cc723a"), "freq": 0.04, "outline": Color(0.2, 0.1, 0.05, 0.95), "planks": false, "barrel_tile": 16, "course": 16, "moss": Color("6f9a82"), "moss_t": 0.55, "speckle": 0.0},
+	"roof_barrel_rustic": {"label": "Barrel tiles: rustic brown (small)", "a": Color("5a3b2a"), "b": Color("8e6a48"), "freq": 0.07, "outline": Color(0.1, 0.06, 0.04, 0.95), "planks": false, "barrel_tile": 8, "course": 16, "speckle": 0.03},
+	"roof_barrel_large": {"label": "Barrel tiles: plum", "a": Color("7a3a3c"), "b": Color("b0705a"), "freq": 0.04, "outline": Color(0.2, 0.07, 0.08, 0.95), "planks": false, "barrel_tile": 16, "course": 16, "speckle": 0.0},
+	"roof_tile_patched": {"label": "Red tiles: patched", "a": Color("8c3a2c"), "b": Color("b8604a"), "freq": 0.06, "outline": Color(0.22, 0.07, 0.05, 0.9), "planks": false, "plank_w": 16, "vertical": false, "patch": 0.14, "speckle": 0.03},
+	"roof_shake_grey": {"label": "Weathered grey shakes", "a": Color("6a6d70"), "b": Color("a4a8aa"), "freq": 0.08, "outline": Color(0.1, 0.1, 0.11, 0.9), "planks": false, "plank_w": 8, "vertical": false, "speckle": 0.04},
+	"roof_shake_tan": {"label": "Tan cedar shakes", "a": Color("8a7650"), "b": Color("c2ab78"), "freq": 0.08, "outline": Color(0.2, 0.15, 0.08, 0.9), "planks": false, "plank_w": 8, "vertical": false, "speckle": 0.03},
+	"roof_shingle_fine_brown": {"label": "Fine brown shingles", "a": Color("3e2a1c"), "b": Color("6c4a30"), "freq": 0.08, "outline": Color(0.06, 0.04, 0.02, 0.9), "planks": false, "plank_w": 8, "vertical": false, "speckle": 0.03},
+	"roof_snow_slate": {"label": "Snowy slate", "a": Color("5c626b"), "b": Color("a9b1bb"), "freq": 0.035, "outline": Color(0.08, 0.09, 0.11, 0.9), "planks": false, "plank_w": 16, "vertical": false, "speckle": 0.04},
+	"roof_snow": {"label": "Snow-covered", "a": Color("c4ccd6"), "b": Color("f2f5f9"), "freq": 0.03, "outline": Color(0.35, 0.4, 0.48, 0.85), "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.02},
+	"roof_straw_gold": {"label": "Golden straw thatch", "a": Color("a8873c"), "b": Color("d9b95e"), "freq": 0.14, "outline": Color(0.28, 0.2, 0.06, 0.85), "planks": false, "speckle": 0.16},
+	"roof_shingle_grey": {"label": "Weathered grey shingles", "a": Color("45423e"), "b": Color("6b675f"), "freq": 0.07, "outline": Color(0.05, 0.05, 0.04, 0.9), "planks": false, "plank_w": 16, "vertical": false, "speckle": 0.03},
+	"roof_copper": {"label": "Weathered copper", "a": Color("3f7a68"), "b": Color("6fb09a"), "freq": 0.05, "outline": Color(0.08, 0.2, 0.17, 0.9), "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.03},
+	"roof_tile_brown": {"label": "Brown clay tiles", "a": Color("5b3a2a"), "b": Color("84563b"), "freq": 0.05, "outline": Color(0.12, 0.06, 0.04, 0.9), "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.02},
 }
 
 static var TERRAIN: Dictionary = {
@@ -76,6 +95,13 @@ static var TERRAIN: Dictionary = {
 	"dock_weathered": {"label": "Wood: weathered dock", "a": Color("6b5638"), "b": Color("8f7852"), "freq": 0.05, "outline": Color(0.1, 0.08, 0.06, 0.8), "blocks_scatter": true, "planks": false, "plank_w": 32, "vertical": false, "cracks": true, "speckle": 0.01},
 	"dock_vertical": {"label": "Wood: weathered dock (vertical)", "a": Color("6b5638"), "b": Color("8f7852"), "freq": 0.05, "outline": Color(0.1, 0.08, 0.06, 0.8), "blocks_scatter": true, "planks": false, "plank_w": 16, "vertical": true, "cracks": true, "speckle": 0.01},
 	"driftwood": {"label": "Wood: bleached driftwood", "a": Color("9a8f80"), "b": Color("c0b6a2"), "freq": 0.05, "outline": Color(0.2, 0.18, 0.15, 0.7), "blocks_scatter": true, "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.01},
+	# --- stone and plaster ---
+	"stone_pebbles": {"label": "Stone: river pebbles", "a": Color("3c3b38"), "b": Color("a9a69e"), "freq": 0.06, "outline": Color(0, 0, 0, 0), "blocks_scatter": true, "planks": false, "speckle": 0.02, "stones": {"grid": 24, "ar": 1.15, "grout": 1.0, "round": 3.0}, "tones": [Color("8d8b86"), Color("a5a29a"), Color("75736e"), Color("b3aea3"), Color("6a6963"), Color("968f84")]},
+	"stone_rough": {"label": "Stone: rough fieldstone", "a": Color("3a312c"), "b": Color("a58f80"), "freq": 0.07, "outline": Color(0, 0, 0, 0), "blocks_scatter": true, "planks": false, "speckle": 0.02, "stones": {"grid": 16, "ar": 1.0, "grout": 1.5, "round": 1.5}, "tones": [Color("8e8179"), Color("a4917f"), Color("7c716b"), Color("b09c8c"), Color("9a8a82"), Color("85796f")]},
+	"stone_limestone": {"label": "Stone: pale limestone", "a": Color("55534c"), "b": Color("d8d5cb"), "freq": 0.07, "outline": Color(0, 0, 0, 0), "blocks_scatter": true, "planks": false, "speckle": 0.03, "stones": {"grid": 18, "ar": 1.2, "grout": 1.2, "round": 2.0}, "tones": [Color("c9c6bb"), Color("b8b5a9"), Color("d9d7cd"), Color("aaa79c"), Color("c2bfb2")]},
+	"stone_fieldstone": {"label": "Stone: rounded fieldstone", "a": Color("2c2924"), "b": Color("8a7a5a"), "freq": 0.06, "outline": Color(0, 0, 0, 0), "blocks_scatter": true, "planks": false, "speckle": 0.02, "stones": {"grid": 16, "ar": 1.6, "grout": 1.5, "round": 4.0}, "tones": [Color("7d6c4f"), Color("5f5c54"), Color("8f7e5c"), Color("6b6e6e"), Color("98835e"), Color("746955")]},
+	"stone_slate_stack": {"label": "Stone: stacked slate", "a": Color("2a2a2c"), "b": Color("b0a79a"), "freq": 0.08, "outline": Color(0, 0, 0, 0), "blocks_scatter": true, "planks": false, "speckle": 0.02, "courses": {"rows": [12, 8, 16, 10, 14, 8, 12, 10, 14, 8, 16, 12, 8, 16, 10, 14, 8, 12, 10, 14, 8, 16], "min": 20, "max": 48}, "tones": [Color("5c616a"), Color("8b6a4c"), Color("a07850"), Color("70757d"), Color("b0a79a"), Color("4a4f58"), Color("9a6f48")]},
+	"stucco_red": {"label": "Plaster: red stucco", "a": Color("8a4a42"), "b": Color("b06a5e"), "freq": 0.22, "outline": Color(0, 0, 0, 0), "blocks_scatter": true, "planks": false, "speckle": 0.0, "stucco": 1.6},
 	"canvas_red": {"label": "Red canvas / tarp", "a": Color("b2402e"), "b": Color("d4583e"), "freq": 0.07, "outline": Color(0.3, 0.08, 0.05, 0.85), "blocks_scatter": true, "planks": false, "speckle": 0.0},
 	# --- train theme ---
 	"rail_dirt": {"label": "Yard dirt", "a": Color("5f5430"), "b": Color("7d6e3c"), "freq": 0.03, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.05},
@@ -127,21 +153,21 @@ static var THEMES: Dictionary = {
 		"background": "grass",
 		"ambient": Color(0.62, 0.64, 0.72),
 		"terrain": ["grass", "grass_dark", "dirt", "stone", "wood", "wood_planks_dark", "wood_worn", "wood_planks_light", "wood_deck", "wood_braced", "wood_vertical", "canvas_red", "dark", "carpet", "water", "shadow", "moss", "blood"],
-		"props": ["tree", "bush", "rock", "barrel", "crate", "table", "well", "torch"],
+		"props": ["weapon", "tree", "bush", "rock", "barrel", "crate", "table", "well", "torch", "fireplace"],
 	},
 	"train": {
 		"label": "Train / Rail yard",
 		"background": "rail_dirt",
 		"ambient": Color(0.84, 0.82, 0.82),
 		"terrain": ["rail_dirt", "gravel", "grass", "grass_dark", "cliff", "river", "train_wood", "wood_planks_dark", "wood_deck", "wood_braced", "train_black", "train_blue", "train_red", "steel", "shadow", "blood"],
-		"props": ["locomotive", "coal_car", "smoke", "bench", "window", "crate", "barrel", "torch", "tree", "bush", "rock"],
+		"props": ["weapon", "locomotive", "coal_car", "smoke", "bench", "window", "crate", "barrel", "torch", "tree", "bush", "rock"],
 	},
 	"desert": {
 		"label": "Desert ruins",
 		"background": "sand",
 		"ambient": Color(0.95, 0.88, 0.76),
 		"terrain": ["sand", "sand_dune", "sandstone", "ruin_tile", "oasis", "stone", "dark", "wood_planks_light", "driftwood", "canvas_red", "shadow"],
-		"props": ["cactus", "palm", "pillar", "broken_pillar", "rubble", "rock", "crate", "barrel", "table", "torch"],
+		"props": ["weapon", "cactus", "palm", "pillar", "broken_pillar", "rubble", "rock", "crate", "barrel", "table", "torch"],
 		"scatter": ["cactus", "rock", "rubble"],
 	},
 	"snow": {
@@ -149,7 +175,7 @@ static var THEMES: Dictionary = {
 		"background": "snow",
 		"ambient": Color(0.72, 0.8, 0.95),
 		"terrain": ["snow", "snow_deep", "ice", "frozen_dirt", "icy_water", "wood", "wood_planks_dark", "wood_worn", "wood_planks_light", "wood_deck", "stone", "shadow"],
-		"props": ["pine", "snowdrift", "snowman", "campfire", "stump", "rock", "crate", "barrel", "table", "torch"],
+		"props": ["weapon", "pine", "snowdrift", "snowman", "campfire", "stump", "rock", "crate", "barrel", "table", "torch"],
 		"scatter": ["pine", "rock", "snowdrift"],
 	},
 	"town": {
@@ -157,7 +183,7 @@ static var THEMES: Dictionary = {
 		"background": "grass",
 		"ambient": Color(0.86, 0.86, 0.9),
 		"terrain": ["grass", "grass_dark", "dirt", "cobble", "plaza", "wood", "wood_planks_dark", "wood_worn", "wood_planks_light", "wood_deck", "wood_braced", "wood_vertical", "dock_weathered", "dock_vertical", "canvas_red", "stone", "carpet", "water", "shadow"],
-		"props": ["stall", "fountain", "lamppost", "cart", "haybale", "well", "tree", "bush", "barrel", "crate", "table", "torch", "rock"],
+		"props": ["weapon", "stall", "fountain", "lamppost", "cart", "haybale", "well", "tree", "bush", "barrel", "crate", "table", "torch", "fireplace", "rock"],
 		"scatter": ["tree", "rock", "bush"],
 	},
 	"coast": {
@@ -165,7 +191,7 @@ static var THEMES: Dictionary = {
 		"background": "ocean",
 		"ambient": Color(0.82, 0.86, 0.95),
 		"terrain": ["ocean", "lagoon", "sand", "cliff", "stone", "plaza", "wood", "dark", "sewer", "deck_ship", "dock_weathered", "dock_vertical", "driftwood", "wood_vertical", "canvas_red", "shadow"],
-		"props": ["palm", "rock", "crate", "barrel", "table", "lamppost", "torch", "bush"],
+		"props": ["weapon", "palm", "rock", "crate", "barrel", "table", "lamppost", "torch", "bush"],
 		"scatter": ["rock", "palm"],
 	},
 	"swamp": {
@@ -173,7 +199,7 @@ static var THEMES: Dictionary = {
 		"background": "mud",
 		"ambient": Color(0.56, 0.68, 0.62),
 		"terrain": ["mud", "swamp_grass", "bog", "algae", "mist", "moss", "wood", "wood_planks_dark", "wood_worn", "wood_deck", "dock_weathered", "dock_vertical", "driftwood", "dirt", "shadow", "blood"],
-		"props": ["dead_tree", "reeds", "lilypad", "mushroom", "stump", "wisp", "rock", "bush", "crate", "barrel", "torch"],
+		"props": ["weapon", "dead_tree", "reeds", "lilypad", "mushroom", "stump", "rock", "bush", "crate", "barrel", "torch"],
 		"scatter": ["dead_tree", "stump", "reeds"],
 	},
 	# A wagon is built from parts: a "Wagon: floor boards" polygon for the bed, "Wagon side boards"
@@ -183,7 +209,7 @@ static var THEMES: Dictionary = {
 		"background": "trail_dust",
 		"ambient": Color(0.9, 0.86, 0.8),
 		"terrain": ["trail_dust", "wagon_ruts", "grass", "grass_dark", "dirt", "mud", "wagon_boards", "wood_planks_dark", "wood_worn", "wagon_rug", "carpet", "canvas_red", "water", "shadow"],
-		"props": ["wagon_wheel", "wagon_hitch", "wagon_seat", "trunk", "bedroll", "sacks", "wagon_lantern", "barrel", "crate", "campfire", "haybale", "stump", "rock", "bush", "tree"],
+		"props": ["weapon", "wagon_wheel", "wagon_hitch", "wagon_seat", "trunk", "bedroll", "sacks", "wagon_lantern", "barrel", "crate", "campfire", "haybale", "stump", "rock", "bush", "tree"],
 		"scatter": ["tree", "rock", "bush"],
 	},
 }
@@ -216,6 +242,9 @@ static var PROPS: Dictionary = {
 	"well": {"defence": 0.70, "label": "Well", "radius": 36.0, "solid": 34.0},
 	# light = {r: radius, c: color, e: energy}; props with it emit a flickering light
 	"torch": {"label": "Torch (light)", "radius": 10.0, "solid": 0.0, "light": {"r": 240.0, "c": Color(1.0, 0.62, 0.3), "e": 1.1}},
+	# A gun lying on the ground. Which one is the prop's "loot" value (a key in Weapons.PLAYER_CHOICES).
+	# In play-test it glows and bobs; walking over it picks it up.
+	"weapon": {"label": "Weapon pickup", "radius": 16.0, "solid": 0.0},
 	# desert
 	"cactus": {"label": "Cactus", "radius": 24.0, "solid": 10.0},
 	"palm": {"defence": 0.25, "label": "Palm tree", "radius": 64.0, "solid": 8.0, "fade": true},
@@ -228,6 +257,8 @@ static var PROPS: Dictionary = {
 	"snowman": {"defence": 0.20, "label": "Snowman", "radius": 20.0, "solid": 14.0},
 	"campfire": {"label": "Campfire (light)", "radius": 24.0, "solid": 0.0, "light": {"r": 300.0, "c": Color(1.0, 0.55, 0.2), "e": 1.2}},
 	"stump": {"defence": 0.30, "low": true, "label": "Tree stump", "radius": 18.0, "solid": 14.0, "no_shadow": true},
+	# Square stone hearth with a burning fire, as in the tavern floor plans. Low, so it gives some cover.
+	"fireplace": {"defence": 0.40, "low": true, "label": "Fireplace (light)", "radius": 40.0, "solid": 0.0, "rect": Vector2(60, 60), "light": {"r": 340.0, "c": Color(1.0, 0.58, 0.24), "e": 1.3}},
 	# town
 	"stall": {"defence": 0.30, "label": "Market stall", "radius": 52.0, "solid": 0.0, "rect": Vector2(96, 64)},
 	"fountain": {"defence": 0.70, "label": "Fountain", "radius": 52.0, "solid": 46.0},
@@ -239,7 +270,6 @@ static var PROPS: Dictionary = {
 	"reeds": {"label": "Reeds", "radius": 28.0, "solid": 0.0},
 	"lilypad": {"label": "Lily pads", "radius": 24.0, "solid": 0.0},
 	"mushroom": {"label": "Mushrooms", "radius": 16.0, "solid": 0.0},
-	"wisp": {"label": "Will-o-wisp (light)", "radius": 14.0, "solid": 0.0, "light": {"r": 220.0, "c": Color(0.5, 1.0, 0.8), "e": 1.0}},
 	# covered wagon (parts are drawn with the wagon's length running along local y; hitch points to -y)
 	"wagon_wheel": {"defence": 0.30, "label": "Wagon wheel (hub faces +x)", "radius": 24.0, "solid": 0.0, "rect": Vector2(10, 46)},
 	"wagon_hitch": {"label": "Wagon hitch (tongue + crossbars)", "radius": 60.0, "solid": 0.0},
@@ -275,6 +305,7 @@ const NPC_WEAPONS := {
 	"pistol": "Pistol",
 	"shotgun": "Shotgun",
 	"rifle": "Rifle",
+	"flintlock": "Flintlock Rifle",
 }
 const NPC_LOOT := {
 	"none": "Nothing",
@@ -288,6 +319,7 @@ const NPC_LOOT := {
 	"pistol": "Pistol",
 	"shotgun": "Shotgun",
 	"rifle": "Rifle",
+	"flintlock": "Flintlock Rifle",
 }
 ## Loot kinds from older maps that no longer exist -> what they become.
 const LOOT_MIGRATE := {"ammo": "none", "weapon": "none"}
@@ -297,10 +329,51 @@ static func clean_loot(k: String) -> String:
 	k = str(LOOT_MIGRATE.get(k, k))
 	return k if NPC_LOOT.has(k) else "none"
 const DEFAULT_NPC_HP := 40  # matches NpcNode.MAX_HP
+const DEFAULT_NPC_SPEED := 4  # tiles an NPC can move in one action (matches the old 140 px)
+const MAX_SPEED := 20
+const MAX_ACTIONS := 5  # most actions an NPC / animal can take per combat turn (editor field)
+const DEFAULT_NPC_XP := 10  # XP the player earns for killing an NPC (editor field)
 const NPC_DISPOSITIONS := {
 	"friendly": "Friendly",
 	"hostile": "Hostile",
 }
+
+
+## Animal types (Animal tool). Each entry holds the defaults a new animal of that type starts with:
+## hp, damage range (dmg_min..dmg_max per bite), aggro = how close (in tiles) the player can get
+## before a hostile animal attacks, plus speed (px/s), size multiplier and body colour for drawing.
+const ANIMALS := {
+	"rat": {"move": 4, "xp": 2, "label": "Rat", "hp": 6, "dmg_min": 1, "dmg_max": 3, "aggro": 3.0, "speed": 85.0, "size": 0.6, "color": Color("6b4430")},
+	"snake": {"move": 3, "xp": 4, "label": "Snake", "hp": 8, "dmg_min": 4, "dmg_max": 8, "aggro": 2.0, "speed": 70.0, "size": 0.8, "color": Color("c4622d")},
+	"dog": {"move": 5, "xp": 5, "label": "Dog", "hp": 15, "dmg_min": 2, "dmg_max": 5, "aggro": 5.0, "speed": 105.0, "size": 0.8, "color": Color("a5764a")},
+	"coyote": {"move": 5, "xp": 8, "label": "Coyote", "hp": 18, "dmg_min": 3, "dmg_max": 6, "aggro": 6.0, "speed": 115.0, "size": 0.85, "color": Color("b09060")},
+	"wolf": {"move": 5, "xp": 15, "label": "Wolf", "hp": 30, "dmg_min": 5, "dmg_max": 10, "aggro": 8.0, "speed": 120.0, "size": 1.0, "color": Color("7d8189")},
+	"bear": {"move": 4, "xp": 40, "label": "Bear", "hp": 80, "dmg_min": 10, "dmg_max": 20, "aggro": 5.0, "speed": 85.0, "size": 1.6, "color": Color("5a3d2b")},
+}
+## Body colour choices for snakes (key -> [label, colour]). The default is the original orange.
+const SNAKE_COLORS := {
+	"red": ["Red", Color("b02a22")],
+	"orange": ["Orange", Color("c4622d")],
+	"blue": ["Blue", Color("2f5fa8")],
+	"green": ["Green", Color("4a8c3a")],
+	"brown": ["Brown", Color("6b4a2b")],
+	"black": ["Black", Color("26262a")],
+}
+const SNAKE_COLOR_DEFAULT := "orange"
+const ANIMAL_DEFAULT := "wolf"
+const ANIMAL_DISPOSITIONS := {
+	"friendly": "Friendly",
+	"hostile": "Hostile",
+}
+
+
+static func new_animal(species: String = ANIMAL_DEFAULT, pos: Vector2 = Vector2.ZERO, disposition: String = "hostile") -> Dictionary:
+	if not ANIMALS.has(species):
+		species = ANIMAL_DEFAULT
+	var def: Dictionary = ANIMALS[species]
+	return {"species": species, "pos": pos, "disposition": disposition, "hp": int(def["hp"]),
+			"dmg_min": int(def["dmg_min"]), "dmg_max": int(def["dmg_max"]), "aggro": float(def["aggro"]), "xp": int(def["xp"]), "actions": 1, "speed": int(def["move"]),
+			"color": SNAKE_COLOR_DEFAULT, "patrol": PackedVector2Array()}
 
 
 ## Wall openings: key -> [label, default width]
@@ -336,6 +409,7 @@ static func empty(theme: String = "fantasy") -> Dictionary:
 		"props": [],
 		"lights": [],
 		"npcs": [],
+		"animals": [],
 		"openings": [],
 		"roofs": [],
 	}
@@ -355,9 +429,64 @@ static func new_wall(pts: PackedVector2Array, closed: bool, width: float = 12.0,
 	return {"points": pts, "closed": closed, "width": width, "style": style}
 
 
+## Walls share the draw order of the terrain polygons. A wall's optional "under" key is how many
+## polygons are drawn beneath it (0 = under all of them). Without it the wall is above every polygon.
+static func wall_under(d: Dictionary, w: Dictionary) -> int:
+	var n: int = d["polygons"].size()
+	return clampi(int(w["under"]), 0, n) if w.has("under") else n
+
+
+## The shared draw order, bottom first: [["polygon", index] or ["wall", index], ...].
+static func terrain_sequence(d: Dictionary) -> Array:
+	var seq: Array = []
+	var n: int = d["polygons"].size()
+	for i in n:
+		for k in d["walls"].size():
+			if wall_under(d, d["walls"][k]) == i:
+				seq.append(["wall", k])
+		seq.append(["polygon", i])
+	for k in d["walls"].size():
+		if wall_under(d, d["walls"][k]) >= n:
+			seq.append(["wall", k])
+	return seq
+
+
+## Rewrites the polygon and wall lists (and each wall's "under") so they follow `seq`,
+## a list in the same format terrain_sequence returns. Returns {"polygon": {old: new}, "wall": {old: new}}.
+static func apply_terrain_sequence(d: Dictionary, seq: Array) -> Dictionary:
+	var polys: Array = []
+	var walls: Array = []
+	var remap := {"polygon": {}, "wall": {}}
+	var total: int = d["polygons"].size()
+	for e in seq:
+		if e[0] == "polygon":
+			remap["polygon"][e[1]] = polys.size()
+			polys.append(d["polygons"][e[1]])
+		else:
+			remap["wall"][e[1]] = walls.size()
+			var w: Dictionary = d["walls"][e[1]]
+			if polys.size() >= total:
+				w.erase("under")  # above every polygon: the default
+			else:
+				w["under"] = polys.size()
+			walls.append(w)
+	d["polygons"] = polys
+	d["walls"] = walls
+	return remap
+
+
+## A polygon was removed at `idx`: walls that sat above it keep their place in the draw order.
+static func polygon_removed(d: Dictionary, idx: int) -> void:
+	for w in d["walls"]:
+		if w.has("under") and int(w["under"]) > idx:
+			w["under"] = int(w["under"]) - 1
+
+
 ## Props that can hold loot (a key in NPC_LOOT). In play-test the player can select them;
 ## barrels can be shot apart and crates opened with E, which drops the loot.
 const LOOT_PROPS := ["barrel", "crate", "trunk"]
+## The weapon pickup prop keeps the gun it shows in its "loot" field.
+const WEAPON_PROP := "weapon"
 
 
 static func new_prop(type: String, pos: Vector2, scale: float = 1.0, rot: float = 0.0, seed_v: int = -1, loot: String = "none", locked: bool = false) -> Dictionary:
@@ -366,8 +495,22 @@ static func new_prop(type: String, pos: Vector2, scale: float = 1.0, rot: float 
 	return {"type": type, "pos": pos, "scale": scale, "rot": rot, "seed": seed_v, "loot": loot, "locked": locked}
 
 
-static func new_light(pos: Vector2, radius: float = 300.0, color: Color = Color(1, 0.75, 0.45), energy: float = 1.0, flicker: bool = true) -> Dictionary:
-	return {"pos": pos, "radius": radius, "color": color, "energy": energy, "flicker": flicker}
+## Light settings of a "(light)" prop as {radius, color, energy, flicker}, or {} if it emits none.
+## Starts from the type's defaults (radius scaled by the prop's scale); a "light" dictionary on the
+## prop itself (set in the editor) overrides any of the four values.
+static func prop_light(pr: Dictionary) -> Dictionary:
+	var lt: Dictionary = PROPS.get(pr["type"], {}).get("light", {})
+	if lt.is_empty():
+		return {}
+	var out := {"radius": float(lt["r"]) * float(pr["scale"]), "color": lt["c"], "energy": float(lt["e"]), "flicker": true, "npc_shadow": false}
+	var ov: Dictionary = pr.get("light", {})
+	for k in ov:
+		out[k] = ov[k]
+	return out
+
+
+static func new_light(pos: Vector2, radius: float = 300.0, color: Color = Color(1, 0.75, 0.45), energy: float = 1.0, flicker: bool = true, npc_shadow: bool = false) -> Dictionary:
+	return {"pos": pos, "radius": radius, "color": color, "energy": energy, "flicker": flicker, "npc_shadow": npc_shadow}
 
 
 ## patrol = closed area (3+ points) the NPC wanders inside; empty = stands still.
@@ -378,7 +521,7 @@ static func new_opening(kind: String, pos: Vector2, rot: float = 0.0, width: flo
 
 ## head = index into head_art.gd (hats, then hair styles); -1 = none.
 static func new_npc(npc_name: String, pos: Vector2, weapon: String = "none", loot: String = "none", disposition: String = "friendly", patrol: PackedVector2Array = PackedVector2Array(), head: int = -1) -> Dictionary:
-	return {"name": npc_name, "pos": pos, "weapon": weapon, "loot": loot, "disposition": disposition, "patrol": patrol, "head": head, "hp": DEFAULT_NPC_HP}
+	return {"name": npc_name, "pos": pos, "weapon": weapon, "loot": loot, "disposition": disposition, "patrol": patrol, "head": head, "hp": DEFAULT_NPC_HP, "xp": DEFAULT_NPC_XP, "actions": 1, "speed": DEFAULT_NPC_SPEED}
 
 
 # ---------------------------------------------------------------- textures
@@ -400,6 +543,46 @@ static func get_texture(type: String) -> Texture2D:
 	var col_b: Color = def["b"]
 	var planks: bool = def["planks"]
 	var speckle: float = def["speckle"]
+	var th := absi(type.hash()) % 10007
+	# "stones": jittered-grid Voronoi cells (wrapping, so it tiles) drawn as separate stones with grout.
+	var st: Dictionary = def.get("stones", {})
+	var tones: Array = def.get("tones", [])
+	var gn := 0
+	var cell := 1.0
+	var gpts := PackedVector2Array()
+	if not st.is_empty():
+		var prng := RandomNumberGenerator.new()
+		prng.seed = type.hash()
+		gn = int(st["grid"])
+		cell = 256.0 / float(gn)
+		for gy in gn:
+			for gx in gn:
+				gpts.append(Vector2((float(gx) + 0.5 + prng.randf_range(-0.38, 0.38)) * cell, (float(gy) + 0.5 + prng.randf_range(-0.38, 0.38)) * cell))
+	# "courses": horizontal rows of blocks of random length (stacked slate / ledgestone).
+	var crs: Dictionary = def.get("courses", {})
+	var row_of := PackedInt32Array()
+	var row_start := PackedInt32Array()
+	var row_cuts: Array = []
+	if not crs.is_empty():
+		var prng2 := RandomNumberGenerator.new()
+		prng2.seed = type.hash() + 1
+		var yy := 0
+		for ri in (crs["rows"] as Array).size():
+			var rh: int = crs["rows"][ri]
+			row_start.append(yy)
+			for k in rh:
+				row_of.append(ri)
+			yy += rh
+			var cuts := PackedInt32Array([0])
+			var xx := 0
+			while true:
+				var bw := prng2.randi_range(int(crs["min"]), int(crs["max"]))
+				if 256 - xx - bw < int(crs["min"]):
+					cuts.append(256)
+					break
+				xx += bw
+				cuts.append(xx)
+			row_cuts.append(cuts)
 	for y in 256:
 		for x in 256:
 			var v: float = clampf(src.get_pixel(x, y).r, 0.0, 1.0)
@@ -430,6 +613,51 @@ static func get_texture(type: String) -> Texture2D:
 					c = c.darkened(0.5)
 				elif absi(lx - ly) < 2 or absi(lx + ly - (cs - 1)) < 2:
 					c = c.darkened(0.4)
+			elif def.has("chimney"):
+				# Chimney top: dark grey masonry rim around a black flue opening.
+				var rim := int(256.0 * float(def["chimney"]))
+				var edge_d := mini(mini(x, 255 - x), mini(y, 255 - y))  # distance to the nearest side
+				if edge_d >= rim:
+					c = Color(0.02, 0.02, 0.025, 1.0)
+					if edge_d < rim + 6:
+						c = Color(0.07, 0.07, 0.08, 1.0)  # soot-lit inner lip
+				elif edge_d >= rim - 4:
+					c = c.darkened(0.45)  # shadowed inner edge of the rim
+				elif edge_d < 4:
+					c = c.lightened(0.12)  # lit outer edge
+			elif def.has("scale"):
+				# Fish-scale shingles: rows of round-ended tiles, each row offset by half a tile.
+				# Upper rows overlap the ones below, so a pixel belongs to its own row's scale if inside
+				# that scale's circle, otherwise to the row beneath. scale = tile width (divides 128).
+				var sw: int = def["scale"]
+				var hh: int = sw / 2
+				var rr := float(sw) * 0.5
+				var row0: int = y / hh
+				var found := false
+				var dist := 0.0
+				var s_col := 0
+				var s_row := 0
+				for k in 2:
+					var rw: int = row0 + k
+					var off: int = (rw % 2) * hh
+					var ccx: int = int(roundf(float(x - off) / float(sw))) * sw + off
+					var ddx := float(x - ccx)
+					var ddy := float(y - rw * hh)
+					var dd := sqrt(ddx * ddx + ddy * ddy)
+					if dd <= rr:
+						found = true
+						dist = dd
+						s_col = posmod(ccx / sw, 256 / sw)
+						s_row = posmod(rw, 256 / hh)
+						break
+				if found:
+					var stone := float(absi(s_col * 7919 + s_row * 104729 + type.hash()) % 17) / 17.0 - 0.5
+					c = c.lightened(stone * 0.18) if stone > 0.0 else c.darkened(-stone * 0.25)
+					c = c.darkened(0.35 * pow(dist / rr, 3.0))
+					if dist > rr - 1.5:
+						c = c.darkened(0.55)
+				else:
+					c = c.darkened(0.7)
 			elif def.has("barrel_tile"):
 				# Barrel (Spanish) clay tiles. Roofs map texture x along the eave and +y up the slope,
 				# so tiles form columns up the texture; each course's rounded end bulges down-slope (-y)
@@ -455,11 +683,85 @@ static func get_texture(type: String) -> Texture2D:
 					c = c.darkened(0.3)  # dark lip of the tile end
 				if lx == 0:
 					c = c.darkened(0.6)  # gap between tile columns
+			elif not st.is_empty():
+				# Nearest and second-nearest stone centre (3x3 cells around, wrapping at the tile edge).
+				var ar: float = st.get("ar", 1.0)
+				var gx0 := int(float(x) / cell)
+				var gy0 := int(float(y) / cell)
+				var d1 := 1e9
+				var d2 := 1e9
+				var p1 := Vector2.ZERO
+				var id1 := 0
+				for oy in range(-1, 2):
+					for ox in range(-1, 2):
+						var cx := gx0 + ox
+						var cy := gy0 + oy
+						var wx := posmod(cx, gn)
+						var wy := posmod(cy, gn)
+						var p := gpts[wy * gn + wx] + Vector2(float(cx - wx), float(cy - wy)) * cell
+						var dx := float(x) - p.x
+						var dy := (float(y) - p.y) * ar
+						var d := sqrt(dx * dx + dy * dy)
+						if d < d1:
+							d2 = d1
+							d1 = d
+							p1 = p
+							id1 = wy * gn + wx
+						elif d < d2:
+							d2 = d
+				var sh := float((id1 * 7919 + th) % 1013) / 1013.0  # per-stone random 0..1
+				var base: Color = col_a.lerp(col_b, sh)
+				if not tones.is_empty():
+					base = (tones[(id1 * 31 + th) % tones.size()] as Color).lightened((sh - 0.5) * 0.2)
+				c = base.lightened((v - 0.5) * 0.3)
+				var edge := d2 - d1
+				var gw: float = st["grout"]
+				if edge < gw:
+					c = col_a.darkened(0.7)  # grout between stones
+				else:
+					var k := clampf((edge - gw) / float(st["round"]), 0.0, 1.0)
+					c = c.darkened(0.4 * (1.0 - k))  # rounded stone: sides fall away into shade
+					var lit := clampf(Vector2(float(x) - p1.x, float(y) - p1.y).normalized().dot(Vector2(-0.7, -0.7)), 0.0, 1.0)
+					c = c.lightened(0.14 * lit * k)  # light from the upper left
+			elif not crs.is_empty():
+				var ri2 := row_of[y]
+				var ly := y - row_start[ri2]
+				var rh2: int = crs["rows"][ri2]
+				var cuts2: PackedInt32Array = row_cuts[ri2]
+				var bk := 0
+				while cuts2[bk + 1] <= x:
+					bk += 1
+				var lx := x - cuts2[bk]
+				var tone2: Color = tones[(ri2 * 131 + bk * 17 + th) % tones.size()] if not tones.is_empty() else col_a
+				c = tone2.lightened((v - 0.5) * 0.25)
+				if ly < 1 or lx < 1:
+					c = col_a.darkened(0.6)  # mortar line
+				elif ly == 1:
+					c = c.lightened(0.15)  # lit top edge of the block
+				elif ly >= rh2 - 2:
+					c = c.darkened(0.25)  # shaded lower edge
+			elif def.has("stucco"):
+				# Rough render: relief from the noise slope, lit from the upper left.
+				var vn := clampf(src.get_pixel((x + 1) % 256, (y + 1) % 256).r, 0.0, 1.0)
+				var slope := (v - vn) * float(def["stucco"])
+				c = c.lightened(slope) if slope > 0.0 else c.darkened(-slope)
 			elif planks:
 				if y % 32 < 2:
 					c = c.darkened(0.45)
 				elif ((x + (y / 32) * 97) % 128) < 2:
 					c = c.darkened(0.35)
+			if def.has("patch"):
+				# Dark repair patches / missing tiles: a random share of 32x16 cells (offset every other row).
+				var prow := y / 16
+				var pcol := (x + (prow % 2) * 16) / 32
+				var ph := absi((pcol % 8) * 7919 + (prow % 16) * 104729 + type.hash()) % 100
+				if float(ph) < float(def["patch"]) * 100.0:
+					c = c.lerp(Color(0.1, 0.09, 0.08), 0.85)
+			if def.has("moss"):
+				# Patches of green moss / lichen, from the noise shifted so it differs from the base tone.
+				var mv: float = src.get_pixel((x + 101) % 256, (y + 67) % 256).r
+				if mv > float(def.get("moss_t", 0.58)):
+					c = c.lerp(def["moss"], 0.7)
 			if speckle > 0.0 and rng.randf() < speckle:
 				c = c.darkened(0.3) if rng.randf() < 0.5 else c.lightened(0.25)
 			img.set_pixel(x, y, c)
@@ -506,6 +808,7 @@ static func to_dict(d: Dictionary) -> Dictionary:
 		"props": [],
 		"lights": [],
 		"npcs": [],
+		"animals": [],
 		"openings": [],
 		"roofs": [],
 	}
@@ -514,7 +817,10 @@ static func to_dict(d: Dictionary) -> Dictionary:
 	for p in d["polygons"]:
 		out["polygons"].append({"type": p["type"], "points": _pack(p["points"])})
 	for w in d["walls"]:
-		out["walls"].append({"points": _pack(w["points"]), "closed": w["closed"], "width": w["width"], "style": w.get("style", "wall")})
+		var wo := {"points": _pack(w["points"]), "closed": w["closed"], "width": w["width"], "style": w.get("style", "wall")}
+		if w.has("under"):
+			wo["under"] = int(w["under"])  # only written for walls placed below some polygon
+		out["walls"].append(wo)
 	for pr in d["props"]:
 		var pos: Vector2 = pr["pos"]
 		var po := {"type": pr["type"], "pos": [snappedf(pos.x, 0.01), snappedf(pos.y, 0.01)], "scale": pr["scale"], "rot": pr["rot"], "seed": pr["seed"]}
@@ -522,22 +828,44 @@ static func to_dict(d: Dictionary) -> Dictionary:
 			po["loot"] = pr["loot"]  # only written when set, so ordinary props stay compact
 		if bool(pr.get("locked", false)):
 			po["locked"] = true
+		if not is_equal_approx(float(pr.get("opacity", 1.0)), 1.0):
+			po["opacity"] = snappedf(float(pr["opacity"]), 0.01)  # only written when changed
+		if pr.has("light"):  # per-prop light override, only written when edited
+			var pl: Dictionary = pr["light"]
+			po["light"] = {"radius": pl["radius"], "color": (pl["color"] as Color).to_html(false), "energy": pl["energy"], "flicker": pl["flicker"], "npc_shadow": bool(pl.get("npc_shadow", false))}
 		out["props"].append(po)
 	for l in d["lights"]:
 		var lp: Vector2 = l["pos"]
 		var lc: Color = l["color"]
-		out["lights"].append({"pos": [lp.x, lp.y], "radius": l["radius"], "color": lc.to_html(false), "energy": l["energy"], "flicker": l["flicker"]})
+		var lo := {"pos": [lp.x, lp.y], "radius": l["radius"], "color": lc.to_html(false), "energy": l["energy"], "flicker": l["flicker"]}
+		if bool(l.get("npc_shadow", false)):
+			lo["npc_shadow"] = true  # only written when on
+		out["lights"].append(lo)
 	for n in d.get("npcs", []):
 		var np: Vector2 = n["pos"]
 		var no := {"name": n["name"], "pos": [snappedf(np.x, 0.01), snappedf(np.y, 0.01)], "weapon": n["weapon"], "loot": n["loot"], "disposition": n["disposition"], "patrol": _pack(n["patrol"]), "head": n.get("head", -1)}
 		if int(n.get("hp", DEFAULT_NPC_HP)) != DEFAULT_NPC_HP:
 			no["hp"] = int(n["hp"])  # only written when changed from the default
+		if int(n.get("speed", DEFAULT_NPC_SPEED)) != DEFAULT_NPC_SPEED:
+			no["speed"] = int(n["speed"])  # only written when changed from the default
+		if int(n.get("actions", 1)) != 1:
+			no["actions"] = int(n["actions"])  # only written when changed from the default
+		if int(n.get("xp", DEFAULT_NPC_XP)) != DEFAULT_NPC_XP:
+			no["xp"] = int(n["xp"])  # only written when changed from the default
 		if bool(n.get("bounty", false)):
 			no["bounty"] = true  # only written when set
+		if bool(n.get("call_help", false)):
+			no["call_help"] = true  # only written when set
 		if bool(n.get("guard", false)):
 			no["guard"] = true  # only written when set
 			no["guard_dir"] = snappedf(float(n.get("guard_dir", 90.0)), 0.1)
 		out["npcs"].append(no)
+	for a in d.get("animals", []):
+		var ap: Vector2 = a["pos"]
+		out["animals"].append({"species": a["species"], "pos": [snappedf(ap.x, 0.01), snappedf(ap.y, 0.01)], "disposition": a["disposition"],
+				"hp": int(a["hp"]), "xp": int(a.get("xp", 0)), "actions": int(a.get("actions", 1)), "speed": int(a.get("speed", ANIMALS.get(str(a["species"]), ANIMALS[ANIMAL_DEFAULT])["move"])), "dmg_min": int(a["dmg_min"]), "dmg_max": int(a["dmg_max"]), "aggro": snappedf(float(a["aggro"]), 0.1),
+				"color": str(a.get("color", SNAKE_COLOR_DEFAULT)),
+				"patrol": _pack(a.get("patrol", PackedVector2Array()))})
 	for o in d.get("openings", []):
 		var op: Vector2 = o["pos"]
 		out["openings"].append({"kind": o["kind"], "pos": [snappedf(op.x, 0.01), snappedf(op.y, 0.01)], "rot": snappedf(float(o["rot"]), 0.0001), "width": o["width"], "thick": o["thick"]})
@@ -553,7 +881,7 @@ static func to_dict(d: Dictionary) -> Dictionary:
 
 
 ## Object lists that can be grouped in the editor (each object may carry "group": int > 0).
-const GROUPABLE := ["polygons", "roofs", "walls", "props", "lights", "npcs", "openings"]
+const GROUPABLE := ["polygons", "roofs", "walls", "props", "lights", "npcs", "animals", "openings"]
 
 
 ## Reads "group" ids back onto loaded objects. `src` and `dst` must line up one to one.
@@ -577,16 +905,23 @@ static func from_dict(j: Dictionary) -> Dictionary:
 		d["roofs"].append(new_roof(rtype if ROOFS.has(rtype) else "roof_shingle", _unpack(r.get("points", []))))
 	for w in j.get("walls", []):
 		d["walls"].append(new_wall(_unpack(w.get("points", [])), bool(w.get("closed", false)), float(w.get("width", 12.0)), str(w.get("style", "wall"))))
+		if w.has("under"):
+			d["walls"][d["walls"].size() - 1]["under"] = int(w["under"])
 	for pr in j.get("props", []):
 		if not PROPS.has(str(pr.get("type", "tree"))):
 			continue  # prop type no longer exists (e.g. removed horses / cattle): drop it
 		var ploot := str(pr.get("loot", "none"))
 		d["props"].append(new_prop(str(pr.get("type", "tree")), _v2(pr.get("pos"), Vector2.ZERO), float(pr.get("scale", 1.0)), float(pr.get("rot", 0.0)), int(pr.get("seed", 0)),
 				clean_loot(ploot), bool(pr.get("locked", false))))
+		if pr.get("light") is Dictionary:
+			var pl: Dictionary = pr["light"]
+			d["props"][d["props"].size() - 1]["light"] = {"radius": float(pl.get("radius", 300.0)), "color": Color(str(pl.get("color", "ffbf73"))), "energy": float(pl.get("energy", 1.0)), "flicker": bool(pl.get("flicker", true)), "npc_shadow": bool(pl.get("npc_shadow", false))}
+		if pr.has("opacity"):
+			d["props"][d["props"].size() - 1]["opacity"] = clampf(float(pr["opacity"]), 0.0, 1.0)
 		if int(pr.get("group", 0)) > 0:  # read here: skipped props would break a by-index match
 			d["props"][d["props"].size() - 1]["group"] = int(pr["group"])
 	for l in j.get("lights", []):
-		d["lights"].append(new_light(_v2(l.get("pos"), Vector2.ZERO), float(l.get("radius", 300.0)), Color(str(l.get("color", "ffbf73"))), float(l.get("energy", 1.0)), bool(l.get("flicker", false))))
+		d["lights"].append(new_light(_v2(l.get("pos"), Vector2.ZERO), float(l.get("radius", 300.0)), Color(str(l.get("color", "ffbf73"))), float(l.get("energy", 1.0)), bool(l.get("flicker", false)), bool(l.get("npc_shadow", false))))
 	for n in j.get("npcs", []):
 		var weapon := str(n.get("weapon", "none"))
 		var loot := str(n.get("loot", "none"))
@@ -597,11 +932,33 @@ static func from_dict(j: Dictionary) -> Dictionary:
 				disp if NPC_DISPOSITIONS.has(disp) else "friendly",
 				_unpack(n.get("patrol", [])), int(n.get("head", -1))))
 		d["npcs"][d["npcs"].size() - 1]["hp"] = clampi(int(n.get("hp", DEFAULT_NPC_HP)), 1, 9999)
+		d["npcs"][d["npcs"].size() - 1]["xp"] = clampi(int(n.get("xp", DEFAULT_NPC_XP)), 0, 99999)
+		d["npcs"][d["npcs"].size() - 1]["actions"] = clampi(int(n.get("actions", 1)), 1, MAX_ACTIONS)
+		d["npcs"][d["npcs"].size() - 1]["speed"] = clampi(int(n.get("speed", DEFAULT_NPC_SPEED)), 0, MAX_SPEED)
 		if bool(n.get("bounty", false)) and disp == "hostile":
 			d["npcs"][d["npcs"].size() - 1]["bounty"] = true
+		if bool(n.get("call_help", false)):
+			d["npcs"][d["npcs"].size() - 1]["call_help"] = true
 		if bool(n.get("guard", false)):
 			d["npcs"][d["npcs"].size() - 1]["guard"] = true
 			d["npcs"][d["npcs"].size() - 1]["guard_dir"] = fposmod(float(n.get("guard_dir", 90.0)), 360.0)
+	for a in j.get("animals", []):
+		var species := str(a.get("species", ANIMAL_DEFAULT))
+		if not ANIMALS.has(species):
+			species = ANIMAL_DEFAULT
+		var adisp := str(a.get("disposition", "hostile"))
+		var an := new_animal(species, _v2(a.get("pos"), Vector2.ZERO), adisp if ANIMAL_DISPOSITIONS.has(adisp) else "hostile")
+		an["hp"] = clampi(int(a.get("hp", an["hp"])), 1, 9999)
+		an["dmg_min"] = clampi(int(a.get("dmg_min", an["dmg_min"])), 0, 999)
+		an["dmg_max"] = clampi(int(a.get("dmg_max", an["dmg_max"])), int(an["dmg_min"]), 999)
+		an["xp"] = clampi(int(a.get("xp", an["xp"])), 0, 99999)
+		an["actions"] = clampi(int(a.get("actions", 1)), 1, MAX_ACTIONS)
+		an["speed"] = clampi(int(a.get("speed", an["speed"])), 0, MAX_SPEED)
+		an["aggro"] = clampf(float(a.get("aggro", an["aggro"])), 0.0, 30.0)
+		var acol := str(a.get("color", SNAKE_COLOR_DEFAULT))
+		an["color"] = acol if SNAKE_COLORS.has(acol) else SNAKE_COLOR_DEFAULT
+		an["patrol"] = _unpack(a.get("patrol", []))
+		d["animals"].append(an)
 	for o in j.get("openings", []):
 		var kind := str(o.get("kind", "door"))
 		if not OPENING_KINDS.has(kind):
@@ -637,9 +994,27 @@ static func load_map(path: String) -> Dictionary:
 static func ensure_loaded() -> void:
 	if not working.is_empty():
 		return
+	var latest := _latest_map_path()
+	if latest != "":
+		current_path = latest
 	working = load_map(current_path)
 	if working.is_empty():
 		working = SampleMap.create()
+
+
+## The .json map in MAP_DIR that was modified most recently, or "" when there is none.
+static func _latest_map_path() -> String:
+	var best := ""
+	var best_time := 0
+	for file in DirAccess.get_files_at(MAP_DIR):
+		if not file.ends_with(".json"):
+			continue
+		var path := MAP_DIR.path_join(file)
+		var t := FileAccess.get_modified_time(path)
+		if t > best_time:
+			best_time = t
+			best = path
+	return best
 
 
 # ---------------------------------------------------------------- geometry helpers

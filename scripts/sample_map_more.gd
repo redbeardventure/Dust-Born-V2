@@ -246,7 +246,7 @@ static func create_swamp() -> Dictionary:
 	d["props"].append(P.call("torch", Vector2(1620, 860), 1.0, 0.0, 5))
 	d["props"].append(P.call("mushroom", Vector2(1580, 780), 1.4, 0.0, 6))
 
-	# Water life and wisps over each pool
+	# Water life over each pool
 	var seed_i := 100
 	for pl in pools:
 		var c: Vector2 = pl[0]
@@ -259,8 +259,6 @@ static func create_swamp() -> Dictionary:
 			var a2 := rng.randf() * TAU
 			d["props"].append(P.call("reeds", c + Vector2(cos(a2), sin(a2)) * r * rng.randf_range(0.95, 1.15), rng.randf_range(0.8, 1.3), rng.randf() * TAU, seed_i))
 			seed_i += 1
-	for w in [[700, 520], [1500, 960], [820, 1280], [1300, 430]]:
-		d["props"].append(P.call("wisp", Vector2(w[0], w[1]), 1.0, 0.0, 70))
 	# Mist drifting over the water
 	for c in [[900, 700], [1400, 1250], [600, 1100]]:
 		d["polygons"].append(MapData.new_poly("mist", SampleMap._organic(SampleMap._blob(Vector2(c[0], c[1]), 260, rng, 10), rng, 20.0, 2)))

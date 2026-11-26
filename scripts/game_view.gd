@@ -12,7 +12,6 @@ var target_label: Label
 var interact_label: Label
 var message_label: Label
 var shoot_btn: Button
-var reload_btn: Button
 var weapon_btn: Button
 var weapon_icon: Control
 var _wheel_layer: CanvasLayer
@@ -56,6 +55,8 @@ func _process(delta: float) -> void:
 	_check_game_over()
 	renderer.update_canopy_fade(player.position, delta)
 	renderer.update_roof_fade(player.position, delta)
+	for op in get_tree().get_nodes_in_group("openings"):
+		(op as OpeningNode).update_badge(player.global_position)
 	_update_ammo()
 	_update_combat_status()
 	_update_combat_cards()
@@ -95,13 +96,12 @@ func _process(delta: float) -> void:
 				"Move next to the target to punch" if fists else "Pick a gun first")
 		if not can_shoot:
 			player.fire_held = false  # a disabled button never sends button_up
-	if reload_btn != null:
+	if ammo_icons != null:
 		var gun := Weapons.is_ranged(Player.weapon)
 		var go := not player.turn_mode or (player.my_turn and player.action_left)
 		var can_reload := gun and go and not player.is_reloading() and player.ammo() < Weapons.mag_size(Player.weapon)
-		reload_btn.disabled = not can_reload
-		reload_btn.tooltip_text = "Reload now%s" % (" (uses your action)" if player.turn_mode else "") if can_reload else (
-				"Pick a gun first" if not gun else
+		ammo_icons.tooltip_text = "Click to reload%s" % (" (uses your action)" if player.turn_mode else "") if can_reload else (
+				"" if not gun else
 				"Wait for your turn" if not go else
 				"Already reloading" if player.is_reloading() else "Magazine is full")
 	if _msg_time > 0.0:
@@ -168,7 +168,7 @@ func _update_ammo() -> void:
 	elif is_instance_valid(t):
 		target_label.text = "Target: %s   HP %d / %d" % [t.get("npc_name"), t.get("hp"), t.get("max_hp")]
 	else:
-		target_label.text = "No target   (click an NPC, barrel or crate to target)"
+		target_label.text = ""
 	var o := player.interact
 	if is_instance_valid(o):
 		var name_txt := "Door" if o.get("kind") == "door" else "Window"
@@ -211,7 +211,7 @@ func _draw_ammo_icons() -> void:
 		loaded = int(floor(player.reload_progress() * mag))
 	var c := ammo_icons
 	# Drawn on a small design grid, then scaled up and centred in the box above the Shoot button.
-	var content_w := 22.0 if w == "pistol" else float(mag) * ((7.0 if w == "shotgun" else 5.0) + 3.0) - 3.0
+	var content_w := 22.0 if w == "pistol" else float(mag) * 15.0 - 3.0 if w == "flintlock" else float(mag) * ((7.0 if w == "shotgun" else 5.0) + 3.0) - 3.0
 	var origin := Vector2((c.size.x - content_w * AMMO_SCALE) * 0.5, (c.size.y - 22.0 * AMMO_SCALE) * 0.5)
 	c.draw_set_transform(origin, 0.0, Vector2(AMMO_SCALE, AMMO_SCALE))
 	if w == "pistol":
@@ -228,6 +228,19 @@ func _draw_ammo_icons() -> void:
 				c.draw_circle(p, 1.0, Color("8a6a24"))  # primer
 			else:
 				c.draw_circle(p, 2.6, Color(0.05, 0.05, 0.06))  # empty chamber
+		c.draw_set_transform_matrix(Transform2D.IDENTITY)
+		return
+	if w == "flintlock":
+		# Round lead balls: dull grey sphere with a soft highlight; an empty slot is a dark ring.
+		for i in mag:
+			var p := Vector2(float(i) * 15.0 + 6.0, 11.0)
+			if i < loaded:
+				c.draw_circle(p, 6.0, Color(0.16, 0.17, 0.2))  # dark edge
+				c.draw_circle(p, 5.0, Color(0.46, 0.48, 0.53))  # lead
+				c.draw_circle(p + Vector2(-1.5, -1.5), 1.8, Color(0.75, 0.77, 0.82))  # highlight
+			else:
+				c.draw_circle(p, 6.0, Color(0.0, 0.0, 0.0, 0.35))
+				c.draw_arc(p, 6.0, 0.0, TAU, 20, Color(0.6, 0.6, 0.6, 0.5), 1.0)
 		c.draw_set_transform_matrix(Transform2D.IDENTITY)
 		return
 	# Rifle rounds / shotgun shells standing in a row.
@@ -303,15 +316,12 @@ func _ready() -> void:
 	player.position = data["spawn"]
 	add_child(player)
 
+	var vulture := VultureShadow.new()
+	vulture.map_size = data["size"]
+	add_child(vulture)
+
 	var layer := CanvasLayer.new()
 	add_child(layer)
-	var hint := Label.new()
-	hint.text = "Click: walk there   Right-click: attack toward cursor   Click NPC / barrel / crate: target   Click door / window: go to it"
-	hint.position = Vector2(HUD_X, 8)
-	hint.add_theme_color_override("font_shadow_color", Color.BLACK)
-	hint.add_theme_constant_override("shadow_offset_x", 1)
-	hint.add_theme_constant_override("shadow_offset_y", 1)
-	layer.add_child(hint)
 	door_prompt = Label.new()
 	door_prompt.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
 	door_prompt.grow_horizontal = Control.GROW_DIRECTION_BOTH
@@ -338,10 +348,12 @@ func _ready() -> void:
 	add_child(combat)
 	combat.message.connect(_flash_message)
 	player.notice.connect(_flash_message)
+	player.weapon_picked.connect(_show_new_weapon)
 	combat.changed.connect(_refresh_combat_panel)
 	_build_combat_panel(layer)
 	_build_combat_cards(layer)
 	_build_hat_picker(layer)
+	layer.add_child(Minimap.create(data))  # overview map, top-right
 	_build_weapon_bar(layer)
 	_build_action_bar(layer)
 	_build_health_bar(layer)
@@ -422,6 +434,11 @@ func _open_weapon_wheel() -> void:
 		player.set_weapon(key)
 		_close_weapon_wheel())
 	wheel.closed.connect(_close_weapon_wheel)
+	wheel.info_requested.connect(func(key: String) -> void:
+		wheel.info_open = true  # the specs card sits over the wheel; the game stays paused
+		NewWeaponPopup.show_for(self, key, true).closed.connect(func() -> void:
+			if is_instance_valid(wheel):
+				wheel.info_open = false))
 	get_tree().paused = true
 
 
@@ -432,6 +449,16 @@ func _close_weapon_wheel() -> void:
 	_wheel_layer = null
 	if not _game_over:
 		get_tree().paused = false
+
+
+## A gun was picked up off the ground: pause and show its stats until the player continues.
+func _show_new_weapon(key: String) -> void:
+	if _game_over or not Weapons.is_ranged(key):
+		return
+	get_tree().paused = true
+	NewWeaponPopup.show_for(self, key).closed.connect(func() -> void:
+		if not _game_over:
+			get_tree().paused = false)
 
 
 ## Win: every bounty NPC on the map is dead. A map without bounties is won once no hostile NPC
@@ -447,7 +474,8 @@ func _check_game_over() -> void:
 	else:
 		var hostiles := 0
 		for n in get_tree().get_nodes_in_group("npcs"):
-			if n is NpcNode and (n as NpcNode).disposition == "hostile" and (n as NpcNode).hp > 0:
+			# Animals (AnimalNode extends NpcNode) don't count: wildlife doesn't block the win.
+			if n is NpcNode and not (n is AnimalNode) and (n as NpcNode).disposition == "hostile" and (n as NpcNode).hp > 0:
 				hostiles += 1
 		if hostiles > 0:
 			_saw_hostile = true
@@ -709,7 +737,12 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 	# Disabled (in _process) while there is no target or no gun selected.
 	# Drawn ammo just above the Shoot button: a revolver cylinder for the pistol, a row of rounds otherwise.
 	ammo_icons = Control.new()
-	ammo_icons.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Clicking the bullets reloads now. In a fight that uses the turn's action (the Quick Reload card doesn't).
+	ammo_icons.mouse_filter = Control.MOUSE_FILTER_STOP
+	ammo_icons.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	ammo_icons.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			player.reload())
 	ammo_icons.custom_minimum_size = Vector2(90, 22.0 * AMMO_SCALE + 6.0)
 	ammo_icons.visible = false
 	ammo_icons.draw.connect(_draw_ammo_icons)
@@ -726,14 +759,6 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 	shoot_btn.button_up.connect(func() -> void: player.fire_held = false)
 	col.add_child(shoot_btn)
 
-	# Reload: refills the magazine now. In a fight it uses the turn's action (the Quick Reload card doesn't).
-	reload_btn = Button.new()
-	reload_btn.text = "Reload"
-	reload_btn.focus_mode = Control.FOCUS_NONE
-	reload_btn.custom_minimum_size = Vector2(90, 56)
-	reload_btn.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
-	reload_btn.pressed.connect(func() -> void: player.reload())
-	col.add_child(reload_btn)
 	# Skip turn: shown only in combat; gives up whatever is left of your turn.
 	skip_btn = Button.new()
 	skip_btn.text = "Skip turn"
@@ -788,6 +813,7 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 	auto_btn.toggled.connect(func(on: bool) -> void:
 		Player.auto_reload = on
 		auto_btn.text = "Auto reload: %s" % ("on" if on else "off"))
+	auto_btn.visible = false  # hidden for now; set to true to bring the toggle back
 	col.add_child(auto_btn)
 	panel.anchor_left = 1.0
 	panel.anchor_right = 1.0
@@ -881,6 +907,19 @@ func _build_health_bar(layer: CanvasLayer) -> void:
 	player.gold_changed.connect(func(total: int, added: int) -> void:
 		purse.text = "Purse: %d gold" % total
 		_flash_message("Picked up %d gold coins" % added))
+	# XP total, top-left above the HP bar (where the controls hint used to be).
+	var xp_label := Label.new()
+	xp_label.position = Vector2(HUD_X, 8)
+	xp_label.text = "XP: %d" % player.xp
+	xp_label.add_theme_color_override("font_color", Color(0.55, 0.85, 1.0))
+	xp_label.add_theme_color_override("font_shadow_color", Color.BLACK)
+	xp_label.add_theme_constant_override("shadow_offset_x", 1)
+	xp_label.add_theme_constant_override("shadow_offset_y", 1)
+	layer.add_child(xp_label)
+	player.xp_changed.connect(func(total: int, added: int) -> void:
+		xp_label.text = "XP: %d" % total
+		if added > 0:
+			_flash_message("+%d XP" % added))
 	player.health_changed.connect(func(hp: int, max_hp: int) -> void:
 		bar.value = hp
 		txt.text = "HP %d / %d" % [hp, max_hp])
@@ -894,7 +933,7 @@ func _build_hat_picker(layer: CanvasLayer) -> void:
 	profile.position = Vector2(12, 8)
 	profile.custom_minimum_size = Vector2(PROFILE_SIZE, PROFILE_SIZE)
 	profile.focus_mode = Control.FOCUS_NONE  # keep arrow keys for walking
-	profile.tooltip_text = "Profile: change hat / hair and shirt colour"
+	profile.tooltip_text = "Profile: change hat / hair"
 	layer.add_child(profile)
 	var portrait := Control.new()
 	portrait.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -912,9 +951,6 @@ func _build_hat_picker(layer: CanvasLayer) -> void:
 	profile.pressed.connect(func() -> void: panel.visible = not panel.visible)
 	var box := VBoxContainer.new()
 	panel.add_child(box)
-	var title := Label.new()
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(title)
 	var row := GridContainer.new()
 	row.columns = 6
 	box.add_child(row)
@@ -934,26 +970,8 @@ func _build_hat_picker(layer: CanvasLayer) -> void:
 		b.add_child(icon)
 		b.pressed.connect(func() -> void:
 			player.set_head(i)
-			title.text = HeadArt.style_name(i)
 			portrait.queue_redraw())
 		row.add_child(b)
-	title.text = HeadArt.style_name(Player.head_style)
-	# Shirt colour: swatch button that opens Godot's colour picker.
-	var shirt_row := HBoxContainer.new()
-	box.add_child(shirt_row)
-	var shirt_lbl := Label.new()
-	shirt_lbl.text = "Shirt colour"
-	shirt_row.add_child(shirt_lbl)
-	var shirt := ColorPickerButton.new()
-	shirt.focus_mode = Control.FOCUS_NONE
-	shirt.custom_minimum_size = Vector2(80, 28)
-	shirt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	shirt.edit_alpha = false
-	shirt.color = Player.shirt_color
-	shirt.color_changed.connect(func(c: Color) -> void:
-		player.set_shirt_color(c)
-		portrait.queue_redraw())
-	shirt_row.add_child(shirt)
 	var close := Button.new()
 	close.text = "Close"
 	close.focus_mode = Control.FOCUS_NONE

@@ -1,22 +1,22 @@
 extends Node2D
 ## Map building / editing screen.
 ##
-## Tools: Select, Polygon, Rectangle, Wall, Prop, Light, Spawn, NPC.
+## Tools: Select, Polygon, Wall, Prop, Light, Spawn, NPC.
 ## Right or middle mouse drag = pan, wheel = zoom, arrows = pan. Ctrl+Z / Ctrl+Y undo / redo, Ctrl+S save.
 
-enum Tool { SELECT, POLYGON, RECT, WALL, PROP, LIGHT, SPAWN, NPC, OPENING, ROOF }
+enum Tool { SELECT, POLYGON, WALL, PROP, LIGHT, SPAWN, NPC, ANIMAL, OPENING, ROOF }
 
-const TOOL_NAMES := ["Select (V)", "Polygon (P)", "Rectangle (R)", "Wall (W)", "Prop (O)", "Light (L)", "Spawn (T)", "NPC (N)", "Door / Window (D)", "Roof (H)"]
+const TOOL_NAMES := ["Select (V)", "Polygon (P)", "Wall (W)", "Prop (O)", "Light (L)", "Spawn (T)", "NPC (N)", "Animal (A)", "Door / Window (D)", "Roof (H)"]
 const PATROL_HINT := "PATROL AREA: click to add points. Click the first point, press Enter or right-click to close. Backspace removes the last point, Esc cancels."
 const TOOL_HINTS := [
 	"SELECT: click to select, drag to move. Drag white handles to edit points. Double-click an edge to add a point, right-click a point to remove it. Del deletes. [ ] change draw order. C copies, V pastes at the cursor. Drag on empty ground or an unselected floor to box-select (Shift adds; Shift-click toggles one). Ctrl+G groups, Ctrl+Shift+G ungroups, Ctrl+A selects all. Q / E rotate the selection 15° (hold to keep turning).",
 	"POLYGON: click to add points. Click the first point, press Enter or right-click to close. Backspace removes the last point, Esc cancels.",
-	"RECTANGLE: drag to draw a rectangular room/area. 'Auto-walls' also builds walls around it.",
 	"WALL: click to add points. Click the first point to close the loop, Enter or right-click to finish an open wall.",
 	"PROP: click to place the selected prop.",
 	"LIGHT: click to place a light with the settings on the left.",
 	"SPAWN: click to set the player start position.",
 	"NPC: click to place a non-player character with the settings at the top. Select it, then use 'Draw patrol area' to set where it wanders.",
+	"ANIMAL: click to place an animal (rat, wolf...) with the settings at the top. Hostile animals attack when you come closer than their aggro range; friendly ones leave you alone until hurt. Select an animal, then use 'Draw patrol area' to set where it wanders.",
 	"DOOR / WINDOW: click on a wall to set a door or window into it (it snaps to the wall and cuts a gap). Windows let light through; doors can be opened or kicked open in play-test.",
 	"ROOF: click to add points. Click the first point, press Enter or right-click to close. Roofs sit above everything. In play-test the whole roof lifts when one of its doors is opened (and stays off), while the player is near one of its windows, or when the player walks under it (a roof with no doors then stays off too). Use the roof button below the tools to show / hide them.",
 ]
@@ -41,8 +41,6 @@ var sel_idx := -1
 
 var cur_points := PackedVector2Array()
 var drawing_patrol := false  # cur_points is a patrol area for the selected NPC
-var rect_start := Vector2.ZERO
-var rect_active := false
 var drag := ""
 var drag_vertex := -1
 var drag_press_screen := Vector2.ZERO
@@ -66,7 +64,9 @@ var _dialog_mode := "open"
 # UI references
 var tool_buttons: Array = []
 var terrain_keys: Array = []
-var prop_keys: Array = []
+var prop_keys: Array = []  # props currently listed in prop_opt (the palette filtered by prop_search)
+var _all_prop_keys: Array = []
+var prop_search: LineEdit
 var terrain_opt: OptionButton
 var prop_opt: OptionButton
 var theme_opt: OptionButton
@@ -76,19 +76,21 @@ var scale_spin: SpinBox
 var rot_spin: SpinBox
 var rand_check: CheckBox
 var prop_loot_opt: OptionButton
+var prop_weapon_opt: OptionButton
 var prop_loot_row: HBoxContainer
 var prop_lock_check: CheckBox
+var opacity_slider: HSlider
 var prop_loot_panel: PanelContainer
 var radius_slider: HSlider
 var energy_slider: HSlider
 var light_color: ColorPickerButton
 var flicker_check: CheckBox
+var npc_shadow_check: CheckBox
 var light_box: PanelContainer
 var wall_width: SpinBox
 var snap_check: CheckBox
 var grid_check: CheckBox
 var light_check: CheckBox
-var autowall_check: CheckBox
 var ambient_btn: ColorPickerButton
 var width_spin: SpinBox
 var height_spin: SpinBox
@@ -115,6 +117,15 @@ var _pending_hit: Array = []  # area (polygon / roof) under a press: selected on
 var group_btn: Button
 var ungroup_btn: Button
 const ROTATE_STEP_DEG := 15.0  # rotate buttons and Q / E turn the selection by this much
+var animal_bar: PanelContainer
+var animal_aggro_panel: PanelContainer
+var animal_species_opt: OptionButton
+var animal_disp_opt: OptionButton
+var animal_color_opt: OptionButton  # snake colour (only used when the type is Snake)
+var animal_hp_spin: SpinBox
+var animal_dmg_min_spin: SpinBox
+var animal_dmg_max_spin: SpinBox
+var animal_aggro_spin: SpinBox
 var npc_bar: PanelContainer
 var npc_name_edit: LineEdit
 var npc_weapon_opt: OptionButton
@@ -125,14 +136,23 @@ var npc_head_opt: OptionButton
 var npc_loot_opt: OptionButton
 var npc_disp_opt: OptionButton
 var npc_bounty_check: CheckBox
+var npc_help_check: CheckBox
 var npc_guard_check: CheckBox
 var npc_guard_dir_box: HBoxContainer   # "Facing" compass + label, shown only for guards
 var npc_guard_compass: Control
 var npc_guard_dir_lbl: Label
 var npc_guard_dir := 90.0  # degrees, 0 = east, 90 = south (screen y points down)
 var npc_hp_spin: SpinBox
+var npc_xp_spin: SpinBox
+var animal_xp_spin: SpinBox
+var npc_actions_spin: SpinBox
+var npc_speed_spin: SpinBox
+var animal_speed_spin: SpinBox
+var animal_actions_spin: SpinBox
 var patrol_btn: Button
 var clear_patrol_btn: Button
+var animal_patrol_btn: Button
+var animal_clear_patrol_btn: Button
 var scene_panel: PanelContainer
 var top_stack: HFlowContainer
 var file_label: Label
@@ -143,6 +163,8 @@ var file_dialog: FileDialog
 func _ready() -> void:
 	MapData.ensure_loaded()
 	data = MapData.working
+	if not data.has("animals"):
+		data["animals"] = []  # map created before animals existed
 
 	renderer = MapRenderer.new()
 	renderer.lighting_enabled = true  # matches the "Lighting preview" checkbox default
@@ -322,6 +344,19 @@ func _build_tool_bar() -> void:
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 4)
 	bar.add_child(col)
+	# Play-test button at the top of the tool column (not a tool, so outside the button group).
+	var play_btn := Button.new()
+	play_btn.custom_minimum_size = Vector2(44, 44)
+	play_btn.tooltip_text = "Play-test this map"
+	play_btn.focus_mode = Control.FOCUS_NONE
+	play_btn.pressed.connect(_play)
+	var play_ic := Control.new()
+	play_ic.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	play_ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	play_ic.draw.connect(_draw_history_icon.bind(play_ic, "play"))
+	play_btn.add_child(play_ic)
+	col.add_child(play_btn)
+	col.add_child(HSeparator.new())
 	var group := ButtonGroup.new()
 	for i in TOOL_NAMES.size():
 		var b := Button.new()
@@ -420,8 +455,7 @@ func _build_history_bar() -> void:
 	menu.add_child(menu_icon)
 	row.add_child(menu)
 	var defs := [["Save (Ctrl+S)", "save", _save], ["Undo (Ctrl+Z)", "undo", undo], ["Redo (Ctrl+Y)", "redo", redo],
-			["Copy selected (C / Ctrl+C)", "copy", _copy_selected], ["Paste (V / Ctrl+V)", "paste", _paste.bind(false)],
-			["Play-test this map", "play", _play]]
+			["Copy selected (C / Ctrl+C)", "copy", _copy_selected], ["Paste (V / Ctrl+V)", "paste", _paste.bind(false)]]
 	for d in defs:
 		var b := Button.new()
 		b.custom_minimum_size = Vector2(44, 44)
@@ -526,6 +560,12 @@ func _build_prop_bar() -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 8)
 	prop_bar.add_child(row)
+	prop_search = LineEdit.new()
+	prop_search.placeholder_text = "Search props..."
+	prop_search.clear_button_enabled = true
+	prop_search.custom_minimum_size.x = 140
+	prop_search.text_changed.connect(func(_t: String) -> void: _apply_prop_filter())
+	row.add_child(prop_search)
 	prop_opt = OptionButton.new()
 	prop_opt.custom_minimum_size.x = 200
 	prop_opt.item_selected.connect(_on_prop_selected)
@@ -544,7 +584,17 @@ func _build_prop_bar() -> void:
 	prop_loot_opt.custom_minimum_size.x = 120
 	prop_loot_opt.item_selected.connect(_on_prop_loot)
 	_row(prop_loot_row, "Loot", prop_loot_opt, 40)
+	# Weapon pickup prop: pick which gun lies on the ground (replaces the Loot dropdown).
+	prop_weapon_opt = OptionButton.new()
+	for wk in Weapons.PLAYER_CHOICES:
+		prop_weapon_opt.add_item(Weapons.label(wk))
+	prop_weapon_opt.custom_minimum_size.x = 120
+	prop_weapon_opt.item_selected.connect(_on_prop_weapon)
+	_row(prop_loot_row, "Weapon", prop_weapon_opt, 52)
 	prop_lock_check = _check(prop_loot_row, "Locked (needs a key)", false, _on_prop_locked)
+	# Opacity (smoke only) sits in this second line so the main bar doesn't run off-screen.
+	opacity_slider = _slider(prop_loot_row, "Opacity", 0.05, 1.0, 1.0, 0.05, _on_prop_opacity)
+	opacity_slider.custom_minimum_size.x = 160
 	# Scatter settings stay hidden; _scatter() still reads this value.
 	scatter_spin = SpinBox.new()
 	scatter_spin.min_value = 5
@@ -554,7 +604,7 @@ func _build_prop_bar() -> void:
 	row.add_child(scatter_spin)
 
 
-## Terrain dropdown. Shown while a polygon/rectangle is selected or the Polygon/Rectangle tool is active.
+## Terrain dropdown. Shown while a polygon is selected or the Polygon tool is active.
 func _build_terrain_bar() -> void:
 	terrain_bar = PanelContainer.new()
 	terrain_bar.visible = false
@@ -709,6 +759,9 @@ func _build_npc_bar() -> void:
 	var row2 := HBoxContainer.new()
 	row2.add_theme_constant_override("separation", 8)
 	col.add_child(row2)
+	var row3 := HBoxContainer.new()
+	row3.add_theme_constant_override("separation", 8)
+	col.add_child(row3)
 	npc_name_edit = LineEdit.new()
 	npc_name_edit.text = "NPC"
 	npc_name_edit.placeholder_text = "NPC name"
@@ -735,11 +788,22 @@ func _build_npc_bar() -> void:
 	npc_disp_opt.custom_minimum_size.x = 90
 	_row(row2, "Attitude", npc_disp_opt, 52)
 	npc_hp_spin = _spin(row2, "Health", 1, 999, MapData.DEFAULT_NPC_HP, 1, func(_v: float) -> void: _on_npc_changed())
+	npc_xp_spin = _spin(row2, "XP", 0, 99999, MapData.DEFAULT_NPC_XP, 1, func(_v: float) -> void: _on_npc_changed())
+	npc_xp_spin.tooltip_text = "Experience points the player earns for killing this NPC"
+	npc_actions_spin = _spin(row2, "Actions/turn", 1, MapData.MAX_ACTIONS, 1, 1, func(_v: float) -> void: _on_npc_changed())
+	npc_actions_spin.tooltip_text = "How many actions (shoot, move, reload) this NPC takes in each of its combat turns"
+	npc_speed_spin = _spin(row3, "Speed", 0, MapData.MAX_SPEED, MapData.DEFAULT_NPC_SPEED, 1, func(_v: float) -> void: _on_npc_changed())
+	npc_speed_spin.tooltip_text = "Speed: how many tiles this NPC can move in one action"
 	# Bounty: only for hostile NPCs. Killing every bounty target wins the play-test.
-	npc_bounty_check = _check(row2, "Bounty", false, func(_on: bool) -> void: _on_npc_changed())
+	npc_bounty_check = _check(row3, "Bounty", false, func(_on: bool) -> void: _on_npc_changed())
 	npc_bounty_check.tooltip_text = "Wanted outlaw (hostile only). The play-test is won once every bounty is killed."
-	patrol_btn = _button(row2, "Draw patrol area", _start_patrol_draw)
-	clear_patrol_btn = _button(row2, "Clear patrol", _clear_patrol)
+	npc_help_check = _check(row3, "Call for help", false, func(_on: bool) -> void: _on_npc_changed())
+	npc_help_check.tooltip_text = "If on, this NPC yells for help during a fight so nearby hostiles join in. Off = never yells."
+	patrol_btn = _button(row3, "Draw patrol area", _start_patrol_draw)
+	clear_patrol_btn = _button(row3, "Clear patrol", _clear_patrol)
+	# _spin's labels are wide (side-panel layout); shrink them so this bar stays compact.
+	for pair in [[npc_hp_spin, 46.0], [npc_xp_spin, 22.0], [npc_actions_spin, 76.0], [npc_speed_spin, 44.0]]:
+		((pair[0] as Control).get_parent().get_child(0) as Label).custom_minimum_size.x = pair[1]
 	# Guard: stands at its post facing one direction (picked on the compass that appears).
 	npc_guard_check = _check(row1, "Guard", false, func(_on: bool) -> void:
 		_sync_guard_ui()
@@ -765,6 +829,120 @@ func _build_npc_bar() -> void:
 	_update_guard_dir_label()
 
 
+## Animal settings bar. Shown while an animal is selected or the Animal tool is active
+## (the Animal tool uses the same settings for newly placed animals).
+func _build_animal_bar() -> void:
+	animal_bar = PanelContainer.new()
+	animal_bar.visible = false
+	_top_stack().add_child(animal_bar)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	animal_bar.add_child(row)
+	animal_species_opt = OptionButton.new()
+	for k in MapData.ANIMALS:
+		animal_species_opt.add_item(str(MapData.ANIMALS[k]["label"]))
+	animal_species_opt.select(maxi(MapData.ANIMALS.keys().find(MapData.ANIMAL_DEFAULT), 0))
+	animal_species_opt.custom_minimum_size.x = 100
+	animal_species_opt.item_selected.connect(_on_animal_species)
+	_row(row, "Type", animal_species_opt, 36)
+	animal_disp_opt = OptionButton.new()
+	for k in MapData.ANIMAL_DISPOSITIONS:
+		animal_disp_opt.add_item(str(MapData.ANIMAL_DISPOSITIONS[k]))
+	animal_disp_opt.select(maxi(MapData.ANIMAL_DISPOSITIONS.keys().find("hostile"), 0))
+	animal_disp_opt.custom_minimum_size.x = 90
+	animal_disp_opt.item_selected.connect(func(_i: int) -> void: _on_animal_changed())
+	_row(row, "Attitude", animal_disp_opt, 52)
+	animal_color_opt = OptionButton.new()
+	for k in MapData.SNAKE_COLORS:
+		animal_color_opt.add_item(str(MapData.SNAKE_COLORS[k][0]))
+	animal_color_opt.select(maxi(MapData.SNAKE_COLORS.keys().find(MapData.SNAKE_COLOR_DEFAULT), 0))
+	animal_color_opt.custom_minimum_size.x = 80
+	animal_color_opt.tooltip_text = "Snake colour"
+	animal_color_opt.item_selected.connect(func(_i: int) -> void: _on_animal_changed())
+	_row(row, "Color", animal_color_opt, 36)
+	var def: Dictionary = MapData.ANIMALS[MapData.ANIMAL_DEFAULT]
+	var changed := func(_v: float) -> void: _on_animal_changed()
+	animal_hp_spin = _spin(row, "Health", 1, 999, def["hp"], 1, changed)
+	animal_dmg_min_spin = _spin(row, "Damage", 0, 999, def["dmg_min"], 1, func(v: float) -> void:
+		if animal_dmg_max_spin.value < v:
+			animal_dmg_max_spin.set_value_no_signal(v)
+		_on_animal_changed())
+	animal_dmg_min_spin.tooltip_text = "Least damage one bite does"
+	animal_dmg_max_spin = _spin(row, "to", 0, 999, def["dmg_max"], 1, func(v: float) -> void:
+		if animal_dmg_min_spin.value > v:
+			animal_dmg_min_spin.set_value_no_signal(v)
+		_on_animal_changed())
+	animal_dmg_max_spin.tooltip_text = "Most damage one bite does"
+	# Aggro gets its own panel in the top stack, so it wraps onto a second line instead of running off-screen.
+	animal_aggro_panel = PanelContainer.new()
+	animal_aggro_panel.visible = false
+	_top_stack().add_child(animal_aggro_panel)
+	var row2 := HBoxContainer.new()
+	row2.add_theme_constant_override("separation", 8)
+	animal_aggro_panel.add_child(row2)
+	# Max 9 tiles = NPC hearing range (see AnimalNode.PROVOKED_RANGE).
+	animal_aggro_spin = _spin(row2, "Aggro (tiles)", 0, 9, def["aggro"], 0.5, changed)
+	animal_aggro_spin.tooltip_text = "Aggressiveness: how close (in tiles, max 9) the player can get before a hostile animal attacks and starts a fight"
+	animal_xp_spin = _spin(row2, "XP", 0, 99999, def["xp"], 1, changed)
+	animal_xp_spin.tooltip_text = "Experience points the player earns for killing this animal"
+	animal_actions_spin = _spin(row2, "Actions/turn", 1, MapData.MAX_ACTIONS, 1, 1, changed)
+	animal_actions_spin.tooltip_text = "Actions per turn: how many times this animal can run / bite in each of its combat turns"
+	animal_speed_spin = _spin(row2, "Speed", 0, MapData.MAX_SPEED, def["move"], 1, changed)
+	animal_speed_spin.tooltip_text = "Speed: how many tiles this animal can run in one action"
+	animal_patrol_btn = _button(row2, "Draw patrol area", _start_patrol_draw)
+	animal_clear_patrol_btn = _button(row2, "Clear patrol", _clear_patrol)
+	# _spin's labels are wide (side-panel layout); shrink them so this bar stays compact.
+	for pair in [[animal_hp_spin, 46.0], [animal_dmg_min_spin, 56.0], [animal_dmg_max_spin, 18.0], [animal_xp_spin, 22.0], [animal_actions_spin, 76.0], [animal_speed_spin, 44.0], [animal_aggro_spin, 84.0]]:
+		((pair[0] as Control).get_parent().get_child(0) as Label).custom_minimum_size.x = pair[1]
+
+
+## Picking a type loads that animal's default stats into the fields (and onto the selected animal).
+func _on_animal_species(i: int) -> void:
+	var def: Dictionary = MapData.ANIMALS[MapData.ANIMALS.keys()[i]]
+	animal_hp_spin.set_value_no_signal(def["hp"])
+	animal_xp_spin.set_value_no_signal(def["xp"])
+	animal_speed_spin.set_value_no_signal(def["move"])
+	animal_dmg_min_spin.set_value_no_signal(def["dmg_min"])
+	animal_dmg_max_spin.set_value_no_signal(def["dmg_max"])
+	animal_aggro_spin.set_value_no_signal(def["aggro"])
+	animal_color_opt.disabled = MapData.ANIMALS.keys()[i] != "snake"
+	_on_animal_changed()
+
+
+## The Animal bar's settings as a new animal dictionary at `p`.
+func _animal_from_ui(p: Vector2) -> Dictionary:
+	var a := MapData.new_animal(MapData.ANIMALS.keys()[maxi(animal_species_opt.selected, 0)], p,
+			MapData.ANIMAL_DISPOSITIONS.keys()[maxi(animal_disp_opt.selected, 0)])
+	a["hp"] = int(animal_hp_spin.value)
+	a["xp"] = int(animal_xp_spin.value)
+	a["actions"] = int(animal_actions_spin.value)
+	a["speed"] = int(animal_speed_spin.value)
+	a["dmg_min"] = int(animal_dmg_min_spin.value)
+	a["dmg_max"] = maxi(int(animal_dmg_max_spin.value), int(a["dmg_min"]))
+	a["aggro"] = float(animal_aggro_spin.value)
+	a["color"] = MapData.SNAKE_COLORS.keys()[maxi(animal_color_opt.selected, 0)]
+	return a
+
+
+func _on_animal_changed() -> void:
+	if _ui_lock or sel_kind != "animal":
+		return
+	push_undo("animal")
+	var a: Dictionary = data["animals"][sel_idx]
+	var fresh := _animal_from_ui(a["pos"])
+	fresh.erase("patrol")  # the patrol area isn't one of the bar's fields
+	for k in fresh:
+		a[k] = fresh[k]  # any "group" id on the animal is left as it is
+	renderer.rebuild_animals()
+
+
+func _place_animal(p: Vector2) -> void:
+	push_undo()
+	data["animals"].append(_animal_from_ui(p))
+	renderer.rebuild_animals()
+	_select("animal", data["animals"].size() - 1)
+
+
 ## Wall style / width / auto-walls bar. Shown while a wall is selected or a tool that creates walls is active.
 func _build_wall_bar() -> void:
 	wall_bar = PanelContainer.new()
@@ -779,7 +957,6 @@ func _build_wall_bar() -> void:
 	wall_style_opt.item_selected.connect(_on_wall_style)
 	_row(row, "Wall style", wall_style_opt)
 	wall_width = _spin(row, "Wall width", 4, 120, 12, 1, _on_wall_width)
-	autowall_check = _check(row, "Auto-walls on rectangles", true)
 
 
 ## Centred row at the top of the screen that holds the contextual bars.
@@ -941,11 +1118,6 @@ func _draw_tool_icon(c: Control, tool_id: int) -> void:
 			c.draw_polyline(pts + PackedVector2Array([pts[0]]), gold, w)
 			for p in pts:
 				c.draw_circle(p, 3.0 * u, white)
-		Tool.RECT:
-			c.draw_rect(Rect2(P.call(9, 12), Vector2(26, 20) * u), Color(0.5, 0.75, 0.5, 0.35))
-			c.draw_rect(Rect2(P.call(9, 12), Vector2(26, 20) * u), gold, false, w)
-			for p in [P.call(9, 12), P.call(35, 12), P.call(9, 32), P.call(35, 32)]:
-				c.draw_rect(Rect2(p - Vector2(2.5, 2.5) * u, Vector2(5, 5) * u), white)
 		Tool.WALL:  # brick wall
 			var brick := Color(0.7, 0.45, 0.35)
 			for r in 3:
@@ -982,6 +1154,16 @@ func _draw_tool_icon(c: Control, tool_id: int) -> void:
 			_draw_roof_icon(c, true)
 			for p in [P.call(6, 34), P.call(6, 24), P.call(22, 9), P.call(38, 24), P.call(38, 34)]:
 				c.draw_circle(p, 2.5 * u, white)
+		Tool.ANIMAL:  # wolf head: ears, muzzle and eyes
+			var fur := Color("7d8189")
+			var dark := Color("4a4d54")
+			c.draw_colored_polygon(PackedVector2Array([P.call(10, 8), P.call(18, 16), P.call(12, 20)]), dark)
+			c.draw_colored_polygon(PackedVector2Array([P.call(34, 8), P.call(26, 16), P.call(32, 20)]), dark)
+			c.draw_colored_polygon(PackedVector2Array([P.call(11, 16), P.call(33, 16), P.call(30, 28), P.call(22, 37), P.call(14, 28)]), fur)
+			c.draw_colored_polygon(PackedVector2Array([P.call(17, 27), P.call(27, 27), P.call(22, 36)]), Color("c9c4bb"))
+			c.draw_circle(P.call(22, 34), 2.2 * u, Color("1a1410"))
+			c.draw_circle(P.call(17, 22), 1.8 * u, Color(1.0, 0.8, 0.25))
+			c.draw_circle(P.call(27, 22), 1.8 * u, Color(1.0, 0.8, 0.25))
 		Tool.NPC:  # person with a dashed patrol loop
 			var green := Color("4caf5a")
 			c.draw_circle(P.call(22, 18), 7.0 * u, green)
@@ -1054,6 +1236,7 @@ func _build_ui() -> void:
 	_build_wall_bar()
 	_build_prop_bar()
 	_build_npc_bar()
+	_build_animal_bar()
 	_build_opening_bar()
 
 	# Light settings bar at the top (shown for a selected light or the Light tool).
@@ -1073,6 +1256,7 @@ func _build_ui() -> void:
 	light_color.color_changed.connect(func(_c: Color) -> void: _on_light_changed())
 	_row(lrow, "Color", light_color, 40)
 	flicker_check = _check(lrow, "Flicker", true, func(_on: bool) -> void: _on_light_changed())
+	npc_shadow_check = _check(lrow, "NPC Shadow", false, func(_on: bool) -> void: _on_light_changed())
 	_update_light_box()
 
 	_build_selection_bar()
@@ -1155,16 +1339,18 @@ func _sel_points() -> PackedVector2Array:
 		return data["walls"][sel_idx]["points"]
 	if sel_kind == "npc":
 		return data["npcs"][sel_idx]["patrol"]
+	if sel_kind == "animal":
+		return data["animals"][sel_idx].get("patrol", PackedVector2Array())
 	return PackedVector2Array()
 
 
-## True when the selection has editable points (polygon / wall outline or an NPC's patrol area).
+## True when the selection has editable points (polygon / wall outline or an NPC's / animal's patrol area).
 func _has_points() -> bool:
-	return sel_kind == "polygon" or sel_kind == "roof" or sel_kind == "wall" or sel_kind == "npc"
+	return sel_kind == "polygon" or sel_kind == "roof" or sel_kind == "wall" or sel_kind == "npc" or sel_kind == "animal"
 
 
 func _sel_closed() -> bool:
-	return sel_kind == "polygon" or sel_kind == "roof" or sel_kind == "npc" or (sel_kind == "wall" and data["walls"][sel_idx]["closed"])
+	return sel_kind == "polygon" or sel_kind == "roof" or sel_kind == "npc" or sel_kind == "animal" or (sel_kind == "wall" and data["walls"][sel_idx]["closed"])
 
 
 func _set_sel_points(pts: PackedVector2Array) -> void:
@@ -1180,6 +1366,9 @@ func _set_sel_points(pts: PackedVector2Array) -> void:
 	elif sel_kind == "npc":
 		data["npcs"][sel_idx]["patrol"] = pts
 		renderer.rebuild_npcs()
+	elif sel_kind == "animal":
+		data["animals"][sel_idx]["patrol"] = pts
+		renderer.rebuild_animals()
 
 
 func _rebuild_kind(kind: String) -> void:
@@ -1196,6 +1385,8 @@ func _rebuild_kind(kind: String) -> void:
 			renderer.rebuild_lights()
 		"npc":
 			renderer.rebuild_npcs()
+		"animal":
+			renderer.rebuild_animals()
 		"opening":
 			renderer.rebuild_openings()
 
@@ -1235,6 +1426,9 @@ func _pick(pos: Vector2) -> Array:
 	for i in range(data["npcs"].size() - 1, -1, -1):
 		if pos.distance_to(data["npcs"][i]["pos"]) < maxf(26.0, 20.0 / z):  # generous, so NPCs are easy to grab
 			return ["npc", i]
+	for i in range(data["animals"].size() - 1, -1, -1):
+		if pos.distance_to(data["animals"][i]["pos"]) < maxf(22.0, 18.0 / z):
+			return ["animal", i]
 	for i in range(data["openings"].size() - 1, -1, -1):
 		if _in_opening(data["openings"][i], pos):
 			return ["opening", i]
@@ -1348,18 +1542,33 @@ func _sync_ui() -> void:
 		"prop":
 			var pr: Dictionary = data["props"][sel_idx]
 			if not prop_keys.has(pr["type"]):
-				_set_palette("all")
+				if _all_prop_keys.has(pr["type"]):
+					prop_search.text = ""  # hidden by the search: show the full list again
+					_apply_prop_filter()
+				else:
+					_set_palette("all")
 			prop_opt.select(maxi(prop_keys.find(pr["type"]), 0))
 			scale_spin.set_value_no_signal(pr["scale"])
 			rot_spin.set_value_no_signal(rad_to_deg(float(pr["rot"])))
 			prop_loot_opt.select(maxi(MapData.NPC_LOOT.keys().find(str(pr.get("loot", "none"))), 0))
+			if pr["type"] == MapData.WEAPON_PROP:
+				prop_weapon_opt.select(maxi(Weapons.PLAYER_CHOICES.find(str(pr.get("loot", "pistol"))), 0))
 			prop_lock_check.set_pressed_no_signal(bool(pr.get("locked", false)))
+			opacity_slider.set_value_no_signal(float(pr.get("opacity", 1.0)))
+			var pl := MapData.prop_light(pr)  # "(light)" props edit their light with the same controls
+			if not pl.is_empty():
+				radius_slider.set_value_no_signal(pl["radius"])
+				energy_slider.set_value_no_signal(pl["energy"])
+				light_color.color = pl["color"]
+				flicker_check.set_pressed_no_signal(pl["flicker"])
+				npc_shadow_check.set_pressed_no_signal(bool(pl.get("npc_shadow", false)))
 		"light":
 			var l: Dictionary = data["lights"][sel_idx]
 			radius_slider.set_value_no_signal(l["radius"])
 			energy_slider.set_value_no_signal(l["energy"])
 			light_color.color = l["color"]
 			flicker_check.set_pressed_no_signal(l["flicker"])
+			npc_shadow_check.set_pressed_no_signal(bool(l.get("npc_shadow", false)))
 		"npc":
 			var n: Dictionary = data["npcs"][sel_idx]
 			npc_name_edit.text = str(n["name"])
@@ -1369,11 +1578,28 @@ func _sync_ui() -> void:
 			npc_head_opt.select(clampi(int(n.get("head", -1)) + 1, 0, HeadArt.count()))
 			npc_bounty_check.set_pressed_no_signal(bool(n.get("bounty", false)))
 			npc_hp_spin.set_value_no_signal(int(n.get("hp", MapData.DEFAULT_NPC_HP)))
+			npc_xp_spin.set_value_no_signal(int(n.get("xp", MapData.DEFAULT_NPC_XP)))
+			npc_actions_spin.set_value_no_signal(int(n.get("actions", 1)))
+			npc_speed_spin.set_value_no_signal(int(n.get("speed", MapData.DEFAULT_NPC_SPEED)))
+			npc_help_check.set_pressed_no_signal(bool(n.get("call_help", false)))
 			npc_guard_check.set_pressed_no_signal(bool(n.get("guard", false)))
 			npc_guard_dir = float(n.get("guard_dir", 90.0))
 			_update_guard_dir_label()
 			_sync_guard_ui()
 			_sync_bounty_check()
+		"animal":
+			var a: Dictionary = data["animals"][sel_idx]
+			animal_species_opt.select(maxi(MapData.ANIMALS.keys().find(a["species"]), 0))
+			animal_disp_opt.select(maxi(MapData.ANIMAL_DISPOSITIONS.keys().find(a["disposition"]), 0))
+			animal_hp_spin.set_value_no_signal(int(a["hp"]))
+			animal_xp_spin.set_value_no_signal(int(a.get("xp", 0)))
+			animal_actions_spin.set_value_no_signal(int(a.get("actions", 1)))
+			animal_speed_spin.set_value_no_signal(int(a.get("speed", 0)))
+			animal_dmg_min_spin.set_value_no_signal(int(a["dmg_min"]))
+			animal_dmg_max_spin.set_value_no_signal(int(a["dmg_max"]))
+			animal_aggro_spin.set_value_no_signal(float(a["aggro"]))
+			animal_color_opt.select(maxi(MapData.SNAKE_COLORS.keys().find(a.get("color", MapData.SNAKE_COLOR_DEFAULT)), 0))
+			animal_color_opt.disabled = a["species"] != "snake"
 		"opening":
 			var o: Dictionary = data["openings"][sel_idx]
 			opening_kind_opt.select(maxi(MapData.OPENING_KINDS.keys().find(o["kind"]), 0))
@@ -1388,22 +1614,28 @@ func _sync_ui() -> void:
 ## Light settings are shown only for a selected light, or with the Light tool (settings for new lights).
 func _update_light_box() -> void:
 	if light_box != null:
-		light_box.visible = sel_kind == "light" or cur_tool == Tool.LIGHT
+		light_box.visible = sel_kind == "light" or cur_tool == Tool.LIGHT or _sel_prop_emits_light() or _tool_prop_emits_light()
 	if terrain_bar != null:
-		terrain_bar.visible = sel_kind == "polygon" or cur_tool == Tool.POLYGON or cur_tool == Tool.RECT
+		terrain_bar.visible = sel_kind == "polygon" or cur_tool == Tool.POLYGON
 	if roof_bar != null:
 		roof_bar.visible = sel_kind == "roof" or cur_tool == Tool.ROOF
 	if wall_bar != null:
-		wall_bar.visible = sel_kind == "wall" or cur_tool == Tool.WALL or cur_tool == Tool.RECT
+		wall_bar.visible = sel_kind == "wall" or cur_tool == Tool.WALL
 	if prop_bar != null:
 		prop_bar.visible = sel_kind == "prop" or cur_tool == Tool.PROP
 		_update_prop_loot_row()
 	if opening_bar != null:
 		opening_bar.visible = sel_kind == "opening" or cur_tool == Tool.OPENING
+	if animal_bar != null:
+		animal_bar.visible = sel_kind == "animal" or cur_tool == Tool.ANIMAL
+		animal_aggro_panel.visible = animal_bar.visible
 	if npc_bar != null:
 		npc_bar.visible = sel_kind == "npc" or cur_tool == Tool.NPC
 		patrol_btn.disabled = sel_kind != "npc"
 		clear_patrol_btn.disabled = sel_kind != "npc" or data["npcs"][sel_idx]["patrol"].is_empty()
+	if animal_patrol_btn != null:
+		animal_patrol_btn.disabled = sel_kind != "animal"
+		animal_clear_patrol_btn.disabled = sel_kind != "animal" or data["animals"][sel_idx].get("patrol", PackedVector2Array()).is_empty()
 
 
 ## Small swatch cropped from the terrain texture; translucent overlays are shown over grey.
@@ -1433,6 +1665,8 @@ func _prop_icon(key: String) -> Texture2D:
 	var node := PropNode.new()
 	node.kind = key
 	node.seed_v = 1
+	if key == MapData.WEAPON_PROP:
+		node.loot = "pistol"  # the dropdown preview shows a gun
 	var rad: float = MapData.PROPS[key]["radius"]
 	var s := (PROP_ICON_PX * 0.42) / maxf(rad, 1.0)
 	node.scale = Vector2(s, s)
@@ -1469,8 +1703,8 @@ func _set_palette(p: String) -> void:
 		p = "fantasy"
 	palette = p
 	terrain_keys = MapData.theme_terrain(p).duplicate()
-	prop_keys = MapData.theme_props(p).duplicate()
-	prop_keys.sort_custom(func(a, b) -> bool:
+	_all_prop_keys = MapData.theme_props(p).duplicate()
+	_all_prop_keys.sort_custom(func(a, b) -> bool:
 		return str(MapData.PROPS[a]["label"]).naturalnocasecmp_to(str(MapData.PROPS[b]["label"])) < 0)
 	terrain_keys.sort_custom(func(a, b) -> bool:
 		return str(MapData.TERRAIN[a]["label"]).naturalnocasecmp_to(str(MapData.TERRAIN[b]["label"])) < 0)
@@ -1478,12 +1712,35 @@ func _set_palette(p: String) -> void:
 	terrain_opt.add_theme_constant_override("icon_max_width", PROP_ICON_PX)
 	for k in terrain_keys:
 		terrain_opt.add_icon_item(_terrain_icon(k), str(MapData.TERRAIN[k]["label"]))
+	terrain_opt.select(0)
+	_apply_prop_filter()
+
+
+## Fills the prop dropdown with the palette's props whose label or key contains the search text.
+## prop_keys always mirrors the dropdown, so every index lookup elsewhere keeps working. With no
+## match the list is left as it was and the search box turns red.
+func _apply_prop_filter() -> void:
+	var q := prop_search.text.strip_edges().to_lower() if prop_search != null else ""
+	var keys: Array = []
+	for k in _all_prop_keys:
+		if q.is_empty() or str(MapData.PROPS[k]["label"]).to_lower().contains(q) or str(k).to_lower().contains(q):
+			keys.append(k)
+	if prop_search != null:
+		prop_search.modulate = Color(1, 0.6, 0.6) if keys.is_empty() else Color.WHITE
+	if keys.is_empty():
+		return
+	var prev: String = prop_keys[prop_opt.selected] if prop_opt.selected >= 0 and prop_opt.selected < prop_keys.size() else ""
+	prop_keys = keys
 	prop_opt.clear()
 	prop_opt.add_theme_constant_override("icon_max_width", PROP_ICON_PX)
 	for k in prop_keys:
 		prop_opt.add_icon_item(_prop_icon(k), str(MapData.PROPS[k]["label"]))
-	terrain_opt.select(0)
-	prop_opt.select(0)
+	prop_opt.select(maxi(prop_keys.find(prev), 0))
+	if _ui_lock or sel_kind == "prop":
+		return
+	_update_prop_loot_row()  # the prop about to be placed may have changed with the selection
+	_load_light_defaults(prop_keys[prop_opt.selected])
+	_update_light_box()
 
 
 ## Themes listed in the Theme dropdown (every real theme; "all" is only a palette filter).
@@ -1538,8 +1795,9 @@ func _set_tool(t: int) -> void:
 	cur_tool = t
 	cur_points = PackedVector2Array()
 	drawing_patrol = false
-	rect_active = false
 	tool_buttons[t].set_pressed_no_signal(true)
+	if t == Tool.PROP and sel_kind != "prop":
+		_load_light_defaults(_prop_key())  # don't carry over values from the Light tool
 	if t == Tool.ROOF and roof_toggle != null and not roof_toggle.button_pressed:
 		roof_toggle.button_pressed = true  # drawing a roof you can't see makes no sense
 	_update_light_box()
@@ -1557,13 +1815,23 @@ func _on_terrain_selected(i: int) -> void:
 func _on_prop_selected(i: int) -> void:
 	if _ui_lock or sel_kind != "prop":
 		_update_prop_loot_row()  # Prop tool: the prop about to be placed may now hold loot
+		if not _ui_lock:
+			_load_light_defaults(prop_keys[i])  # a "(light)" prop starts from its own defaults
+			_update_light_box()
 		return
 	push_undo()
+	data["props"][sel_idx].erase("light")  # a different prop type starts from its own light defaults
+	var was_weapon: bool = data["props"][sel_idx]["type"] == MapData.WEAPON_PROP
 	data["props"][sel_idx]["type"] = prop_keys[i]
-	if not MapData.LOOT_PROPS.has(prop_keys[i]):
+	if prop_keys[i] == MapData.WEAPON_PROP:
+		data["props"][sel_idx]["loot"] = Weapons.PLAYER_CHOICES[maxi(prop_weapon_opt.selected, 0)]
+	elif was_weapon or not MapData.LOOT_PROPS.has(prop_keys[i]):
 		data["props"][sel_idx]["loot"] = "none"  # a tree can't hold loot
 	renderer.rebuild_props()
+	renderer.rebuild_lights()
+	_load_light_defaults(prop_keys[i])
 	_update_prop_loot_row()
+	_update_light_box()
 
 
 func _on_prop_loot(i: int) -> void:
@@ -1571,6 +1839,14 @@ func _on_prop_loot(i: int) -> void:
 		return
 	push_undo()
 	data["props"][sel_idx]["loot"] = MapData.NPC_LOOT.keys()[i]
+
+
+func _on_prop_weapon(i: int) -> void:
+	if _ui_lock or sel_kind != "prop" or data["props"][sel_idx]["type"] != MapData.WEAPON_PROP:
+		return
+	push_undo()
+	data["props"][sel_idx]["loot"] = Weapons.PLAYER_CHOICES[i]
+	renderer.rebuild_props()  # shows the newly chosen gun
 
 
 func _on_prop_locked(on: bool) -> void:
@@ -1589,8 +1865,13 @@ func _update_prop_loot_row() -> void:
 		key = str(data["props"][sel_idx]["type"])
 	elif not prop_keys.is_empty():
 		key = _prop_key()
-	prop_loot_panel.visible = prop_bar.visible and MapData.LOOT_PROPS.has(key)
+	var is_weapon := key == MapData.WEAPON_PROP
+	var is_smoke := key == "smoke"
+	prop_loot_panel.visible = prop_bar.visible and (MapData.LOOT_PROPS.has(key) or is_weapon or is_smoke)
+	prop_loot_opt.get_parent().visible = MapData.LOOT_PROPS.has(key)  # the weapon prop has its own dropdown
+	prop_weapon_opt.get_parent().visible = is_weapon
 	prop_lock_check.visible = key == "crate" or key == "trunk"  # barrels have no lid to lock
+	opacity_slider.get_parent().visible = is_smoke
 
 
 func _on_prop_scale(v: float) -> void:
@@ -1598,6 +1879,14 @@ func _on_prop_scale(v: float) -> void:
 		return
 	push_undo("prop_scale")
 	data["props"][sel_idx]["scale"] = v
+	renderer.update_prop(sel_idx)
+
+
+func _on_prop_opacity(v: float) -> void:
+	if _ui_lock or sel_kind != "prop":
+		return
+	push_undo("prop_opacity")
+	data["props"][sel_idx]["opacity"] = v
 	renderer.update_prop(sel_idx)
 
 
@@ -1617,8 +1906,41 @@ func _on_wall_width(v: float) -> void:
 	renderer.rebuild_walls()
 
 
+func _sel_prop_emits_light() -> bool:
+	return sel_kind == "prop" and sel_idx >= 0 and sel_idx < data["props"].size() and not MapData.prop_light(data["props"][sel_idx]).is_empty()
+
+
+## True while the Prop tool has a "(light)" prop chosen (nothing selected): the light controls then
+## set the light of the next prop placed.
+func _tool_prop_emits_light() -> bool:
+	return cur_tool == Tool.PROP and sel_kind != "prop" and prop_opt != null and not prop_keys.is_empty() \
+			and MapData.PROPS.get(_prop_key(), {}).has("light")
+
+
+## Puts a prop type's default light values into the Radius / Energy / Color / Flicker controls.
+func _load_light_defaults(key: String) -> void:
+	var lt: Dictionary = MapData.PROPS.get(key, {}).get("light", {})
+	if lt.is_empty():
+		return
+	var was_locked := _ui_lock
+	_ui_lock = true
+	radius_slider.set_value_no_signal(float(lt["r"]) * scale_spin.value)
+	energy_slider.set_value_no_signal(float(lt["e"]))
+	light_color.color = lt["c"]
+	flicker_check.set_pressed_no_signal(true)
+	npc_shadow_check.set_pressed_no_signal(false)
+	_ui_lock = was_locked
+
+
 func _on_light_changed() -> void:
-	if _ui_lock or sel_kind != "light":
+	if _ui_lock:
+		return
+	if _sel_prop_emits_light():
+		push_undo("light")
+		data["props"][sel_idx]["light"] = {"radius": radius_slider.value, "color": light_color.color, "energy": energy_slider.value, "flicker": flicker_check.button_pressed, "npc_shadow": npc_shadow_check.button_pressed}
+		renderer.rebuild_lights()
+		return
+	if sel_kind != "light":
 		return
 	push_undo("light")
 	var l: Dictionary = data["lights"][sel_idx]
@@ -1626,6 +1948,7 @@ func _on_light_changed() -> void:
 	l["energy"] = energy_slider.value
 	l["color"] = light_color.color
 	l["flicker"] = flicker_check.button_pressed
+	l["npc_shadow"] = npc_shadow_check.button_pressed
 	renderer.rebuild_lights()
 
 
@@ -1646,7 +1969,11 @@ func _on_npc_changed() -> void:
 	n["disposition"] = MapData.NPC_DISPOSITIONS.keys()[maxi(npc_disp_opt.selected, 0)]
 	n["head"] = npc_head_opt.selected - 1
 	n["hp"] = int(npc_hp_spin.value)
+	n["xp"] = int(npc_xp_spin.value)
+	n["actions"] = int(npc_actions_spin.value)
+	n["speed"] = int(npc_speed_spin.value)
 	n["bounty"] = npc_bounty_check.button_pressed and n["disposition"] == "hostile"
+	n["call_help"] = npc_help_check.button_pressed
 	n["guard"] = npc_guard_check.button_pressed
 	n["guard_dir"] = npc_guard_dir
 	_sync_bounty_check()
@@ -1718,18 +2045,18 @@ func _sync_bounty_check() -> void:
 
 
 func _start_patrol_draw() -> void:
-	if sel_kind != "npc":
+	if sel_kind != "npc" and sel_kind != "animal":
 		return
-	_set_tool(Tool.NPC)  # resets any half-drawn path
+	_set_tool(Tool.NPC if sel_kind == "npc" else Tool.ANIMAL)  # resets any half-drawn path
 	drawing_patrol = true
 
 
 func _clear_patrol() -> void:
-	if sel_kind != "npc":
+	if sel_kind != "npc" and sel_kind != "animal":
 		return
 	push_undo()
-	data["npcs"][sel_idx]["patrol"] = PackedVector2Array()
-	renderer.rebuild_npcs()
+	data[KIND_KEYS[sel_kind]][sel_idx]["patrol"] = PackedVector2Array()
+	_rebuild_kind(sel_kind)
 	_sync_ui()
 
 
@@ -1838,6 +2165,9 @@ func _on_mouse_motion(e: InputEventMouseMotion) -> void:
 				drag_orig_pos = data["props"][sel_idx]["pos"]
 			"light":
 				drag_orig_pos = data["lights"][sel_idx]["pos"]
+			"animal":
+				drag_orig_points = _sel_points()
+				drag_orig_pos = data["animals"][sel_idx]["pos"]
 			"npc":
 				drag_orig_points = _sel_points()
 				drag_orig_pos = data["npcs"][sel_idx]["pos"]
@@ -1888,6 +2218,8 @@ func _on_key(e: InputEventKey) -> void:
 		KEY_A:
 			if ctrl:  # select everything (visible roofs included)
 				_select_many(_objects_in_rect(Rect2(Vector2(-1e6, -1e6), Vector2(2e6, 2e6))))
+			else:
+				_set_tool(Tool.ANIMAL)
 			return
 		KEY_V:
 			# Ctrl+V always pastes. Plain V pastes while the Select tool is active (selecting
@@ -1913,7 +2245,6 @@ func _on_key(e: InputEventKey) -> void:
 				return
 			cur_points = PackedVector2Array()
 			drawing_patrol = false
-			rect_active = false
 			if drag == "marquee" or drag == "marquee_pending":
 				drag = ""  # cancel the selection box
 			_select("", -1)
@@ -1925,8 +2256,6 @@ func _on_key(e: InputEventKey) -> void:
 			_fit_camera()
 		KEY_P:
 			_set_tool(Tool.POLYGON)
-		KEY_R:
-			_set_tool(Tool.RECT)
 		KEY_W:
 			_set_tool(Tool.WALL)
 		KEY_O:
@@ -1951,9 +2280,6 @@ func _left_press(e: InputEventMouseButton) -> void:
 			_select_press(pos, e.double_click)
 		Tool.POLYGON, Tool.WALL, Tool.ROOF:
 			_path_click(sp)
-		Tool.RECT:
-			rect_start = sp
-			rect_active = true
 		Tool.PROP:
 			_place_prop(sp)
 		Tool.LIGHT:
@@ -1963,6 +2289,11 @@ func _left_press(e: InputEventMouseButton) -> void:
 				_path_click(sp)
 			else:
 				_place_npc(sp)
+		Tool.ANIMAL:
+			if drawing_patrol:
+				_path_click(sp)
+			else:
+				_place_animal(sp)
 		Tool.OPENING:
 			_place_opening(pos)
 		Tool.SPAWN:
@@ -1971,8 +2302,6 @@ func _left_press(e: InputEventMouseButton) -> void:
 
 
 func _left_release() -> void:
-	if rect_active:
-		_finish_rect()
 	if drag == "move":
 		_do_move(_mw(), true)
 	if drag == "marquee":
@@ -2056,6 +2385,9 @@ func _select_press(pos: Vector2, dbl: bool) -> void:
 			drag_orig_pos = data["props"][sel_idx]["pos"]
 		"light":
 			drag_orig_pos = data["lights"][sel_idx]["pos"]
+		"animal":
+			drag_orig_points = _sel_points()
+			drag_orig_pos = data["animals"][sel_idx]["pos"]
 		"npc":
 			drag_orig_points = _sel_points()
 			drag_orig_pos = data["npcs"][sel_idx]["pos"]
@@ -2078,7 +2410,7 @@ func _do_move(pos: Vector2, snap: bool = false) -> void:
 			"polygon", "roof", "wall":
 				if drag_orig_points.size() > 0:
 					delta = _snap(drag_orig_points[0] + delta) - drag_orig_points[0]
-			"prop", "light", "npc":
+			"prop", "light", "npc", "animal":
 				delta = _snap(drag_orig_pos + delta) - drag_orig_pos
 	match sel_kind:
 		"polygon", "roof", "wall":
@@ -2092,6 +2424,11 @@ func _do_move(pos: Vector2, snap: bool = false) -> void:
 		"light":
 			data["lights"][sel_idx]["pos"] = drag_orig_pos + delta
 			renderer.update_light(sel_idx)
+		"animal":
+			# The patrol area travels with the animal.
+			data["animals"][sel_idx]["pos"] = drag_orig_pos + delta
+			data["animals"][sel_idx]["patrol"] = _moved(drag_orig_points, delta)
+			renderer.update_animal(sel_idx)
 		"opening":
 			# Slides along (and snaps to) the nearest wall; stays where it is dropped if no wall is close.
 			var o: Dictionary = data["openings"][sel_idx]
@@ -2126,10 +2463,10 @@ func _finish_path(closed: bool) -> void:
 	cur_points = PackedVector2Array()
 	if drawing_patrol:
 		drawing_patrol = false
-		if pts.size() >= 3 and sel_kind == "npc":
+		if pts.size() >= 3 and (sel_kind == "npc" or sel_kind == "animal"):
 			push_undo()
-			data["npcs"][sel_idx]["patrol"] = pts
-			renderer.rebuild_npcs()
+			data[KIND_KEYS[sel_kind]][sel_idx]["patrol"] = pts
+			_rebuild_kind(sel_kind)
 			_set_tool(Tool.SELECT)
 			_sync_ui()
 		return
@@ -2156,24 +2493,6 @@ func _finish_path(closed: bool) -> void:
 		_select("wall", data["walls"].size() - 1)
 
 
-func _finish_rect() -> void:
-	rect_active = false
-	var r := Rect2(rect_start, _snap(_mw()) - rect_start).abs()
-	if r.size.x < 8.0 or r.size.y < 8.0:
-		return
-	push_undo()
-	var pts := PackedVector2Array([r.position, Vector2(r.end.x, r.position.y), r.end, Vector2(r.position.x, r.end.y)])
-	data["polygons"].append(MapData.new_poly(_terrain_key(), pts))
-	renderer.rebuild_terrain()
-	if autowall_check.button_pressed:
-		var rect_style := _wall_style()
-		if rect_style == "rail":
-			rect_style = "wall"
-		data["walls"].append(MapData.new_wall(pts, true, wall_width.value, rect_style))
-		renderer.rebuild_walls()
-	_select("polygon", data["polygons"].size() - 1)
-
-
 func _place_prop(p: Vector2) -> void:
 	push_undo()
 	var sc := scale_spin.value
@@ -2184,15 +2503,23 @@ func _place_prop(p: Vector2) -> void:
 	var loot := "none"
 	if MapData.LOOT_PROPS.has(_prop_key()):
 		loot = MapData.NPC_LOOT.keys()[maxi(prop_loot_opt.selected, 0)]
+	elif _prop_key() == MapData.WEAPON_PROP:
+		loot = Weapons.PLAYER_CHOICES[maxi(prop_weapon_opt.selected, 0)]
 	var lock_it := prop_lock_check.button_pressed and (_prop_key() == "crate" or _prop_key() == "trunk")
-	data["props"].append(MapData.new_prop(_prop_key(), p, sc, rot, -1, loot, lock_it))
+	var new_pr := MapData.new_prop(_prop_key(), p, sc, rot, -1, loot, lock_it)
+	if _prop_key() == "smoke":
+		new_pr["opacity"] = opacity_slider.value
+	if _tool_prop_emits_light():  # use the light controls' values for this prop
+		new_pr["light"] = {"radius": radius_slider.value, "color": light_color.color, "energy": energy_slider.value, "flicker": flicker_check.button_pressed, "npc_shadow": npc_shadow_check.button_pressed}
+	data["props"].append(new_pr)
 	renderer.rebuild_props()
+	renderer.rebuild_lights()
 	_select("prop", data["props"].size() - 1)
 
 
 func _place_light(p: Vector2) -> void:
 	push_undo()
-	data["lights"].append(MapData.new_light(p, radius_slider.value, light_color.color, energy_slider.value, flicker_check.button_pressed))
+	data["lights"].append(MapData.new_light(p, radius_slider.value, light_color.color, energy_slider.value, flicker_check.button_pressed, npc_shadow_check.button_pressed))
 	renderer.rebuild_lights()
 	_select("light", data["lights"].size() - 1)
 
@@ -2207,7 +2534,11 @@ func _place_npc(p: Vector2) -> void:
 		PackedVector2Array(), npc_head_opt.selected - 1))
 	var placed: Dictionary = data["npcs"][data["npcs"].size() - 1]
 	placed["hp"] = int(npc_hp_spin.value)
+	placed["xp"] = int(npc_xp_spin.value)
+	placed["actions"] = int(npc_actions_spin.value)
+	placed["speed"] = int(npc_speed_spin.value)
 	placed["bounty"] = npc_bounty_check.button_pressed and placed["disposition"] == "hostile"
+	placed["call_help"] = npc_help_check.button_pressed
 	if npc_guard_check.button_pressed:
 		placed["guard"] = true
 		placed["guard_dir"] = npc_guard_dir
@@ -2215,7 +2546,7 @@ func _place_npc(p: Vector2) -> void:
 	_select("npc", data["npcs"].size() - 1)
 
 
-const KIND_KEYS := {"polygon": "polygons", "roof": "roofs", "wall": "walls", "prop": "props", "light": "lights", "npc": "npcs", "opening": "openings"}
+const KIND_KEYS := {"polygon": "polygons", "roof": "roofs", "wall": "walls", "prop": "props", "light": "lights", "npc": "npcs", "animal": "animals", "opening": "openings"}
 
 
 func _copy_selected() -> void:
@@ -2286,6 +2617,9 @@ func _translated(kind: String, item: Dictionary, delta: Vector2) -> Dictionary:
 		"npc":
 			out["pos"] = item["pos"] + delta
 			out["patrol"] = _moved(item["patrol"], delta)
+		"animal":
+			out["pos"] = item["pos"] + delta
+			out["patrol"] = _moved(item.get("patrol", PackedVector2Array()), delta)
 		_:
 			out["pos"] = item["pos"] + delta
 	return out
@@ -2469,7 +2803,7 @@ func _rotate_selected(angle: float) -> void:
 	for e in list:
 		items.append([e[0], data[KIND_KEYS[e[0]]][e[1]]])
 	var c := _items_bounds(items).get_center()
-	if list.size() == 1 and (list[0][0] == "prop" or list[0][0] == "opening" or list[0][0] == "light" or list[0][0] == "npc"):
+	if list.size() == 1 and (list[0][0] == "prop" or list[0][0] == "opening" or list[0][0] == "light" or list[0][0] == "npc" or list[0][0] == "animal"):
 		c = data[KIND_KEYS[list[0][0]]][list[0][1]]["pos"]  # a single object turns on the spot
 	push_undo("rotate")  # holding Q / E (key repeat) makes one undo step, not dozens
 	for e in list:
@@ -2494,6 +2828,9 @@ func _rotated_item(kind: String, item: Dictionary, c: Vector2, angle: float) -> 
 		"npc":
 			out["pos"] = c + (item["pos"] - c).rotated(angle)
 			out["patrol"] = _rotated_pts(item["patrol"], c, angle)
+		"animal":
+			out["pos"] = c + (item["pos"] - c).rotated(angle)
+			out["patrol"] = _rotated_pts(item.get("patrol", PackedVector2Array()), c, angle)
 		"prop", "opening":
 			out["pos"] = c + (item["pos"] - c).rotated(angle)
 			out["rot"] = wrapf(float(item["rot"]) + angle, -PI, PI)
@@ -2521,6 +2858,8 @@ func _refresh_items(list: Array) -> void:
 				renderer.update_light(e[1])
 			"npc":
 				renderer.update_npc(e[1])
+			"animal":
+				renderer.update_animal(e[1])
 			"polygon":
 				renderer.update_polygon(e[1])
 			_:
@@ -2593,6 +2932,8 @@ func _delete_selected() -> void:
 	var kinds := {}
 	for e in sorted:
 		data[KIND_KEYS[e[0]]].remove_at(e[1])
+		if e[0] == "polygon":
+			MapData.polygon_removed(data, e[1])  # walls above it keep their place in the draw order
 		kinds[e[0]] = true
 	_select("", -1)
 	for k in kinds:
@@ -2600,7 +2941,10 @@ func _delete_selected() -> void:
 
 
 func _reorder(dir: int) -> void:
-	if sel_kind == "" or sel_kind == "multi" or sel_kind == "light" or sel_kind == "npc" or sel_kind == "opening":
+	if sel_kind == "" or sel_kind == "multi" or sel_kind == "light" or sel_kind == "npc" or sel_kind == "animal" or sel_kind == "opening":
+		return
+	if sel_kind == "polygon" or sel_kind == "wall":
+		_reorder_terrain(dir)  # polygons and walls share one draw order
 		return
 	var key := {"polygon": "polygons", "roof": "roofs", "wall": "walls", "prop": "props"}[sel_kind] as String
 	var arr: Array = data[key]
@@ -2613,6 +2957,29 @@ func _reorder(dir: int) -> void:
 	arr[j] = tmp
 	_rebuild_kind(sel_kind)
 	_select(sel_kind, j)
+
+
+## Moves the selected polygon or wall one step in the draw order they share (so a wall can
+## go under a polygon and a polygon over a wall).
+func _reorder_terrain(dir: int) -> void:
+	var seq := MapData.terrain_sequence(data)
+	var pos := -1
+	for i in seq.size():
+		if seq[i][0] == sel_kind and seq[i][1] == sel_idx:
+			pos = i
+			break
+	var j := pos + dir
+	if pos < 0 or j < 0 or j >= seq.size():
+		return
+	push_undo()
+	var tmp: Array = seq[pos]
+	seq[pos] = seq[j]
+	seq[j] = tmp
+	var remap := MapData.apply_terrain_sequence(data, seq)
+	var new_idx: int = remap[sel_kind][sel_idx]
+	renderer.rebuild_terrain()
+	renderer.rebuild_walls()
+	_select(sel_kind, new_idx)
 
 
 func _scatter() -> void:
@@ -2729,6 +3096,16 @@ func draw_overlay(o: Node2D) -> void:
 			o.draw_colored_polygon(patrol, Color(pcol, 0.14))
 		o.draw_polyline(patrol + PackedVector2Array([patrol[0]]), Color(pcol, 0.8), lw)
 		o.draw_dashed_line(n["pos"], patrol[0], Color(pcol, 0.4), lw, 6.0 / z)
+	# Animal patrol areas
+	for an in data["animals"]:
+		var apatrol: PackedVector2Array = an.get("patrol", PackedVector2Array())
+		if apatrol.size() < 3:
+			continue
+		var acol := Color(0.9, 0.3, 0.3) if an["disposition"] == "hostile" else Color(0.3, 0.85, 0.4)
+		if not Geometry2D.triangulate_polygon(apatrol).is_empty():
+			o.draw_colored_polygon(apatrol, Color(acol, 0.14))
+		o.draw_polyline(apatrol + PackedVector2Array([apatrol[0]]), Color(acol, 0.8), lw)
+		o.draw_dashed_line(an["pos"], apatrol[0], Color(acol, 0.4), lw, 6.0 / z)
 	var sp: Vector2 = data["spawn"]
 	o.draw_circle(sp, 10.0 / z, Color(0.2, 1.0, 0.4, 0.35))
 	o.draw_arc(sp, 10.0 / z, 0.0, TAU, 20, Color(0.2, 1.0, 0.4), 2.0 / z)
@@ -2755,10 +3132,6 @@ func draw_overlay(o: Node2D) -> void:
 		var mc := Color(0.4, 0.85, 1.0)
 		o.draw_rect(mr, Color(mc, 0.12))
 		o.draw_rect(mr, mc, false, 1.5 / z)
-	if rect_active:
-		var r := Rect2(rect_start, mouse - rect_start).abs()
-		o.draw_rect(r, Color(1, 0.85, 0.2, 0.18))
-		o.draw_rect(r, sel_col, false, 2.0 / z)
 
 	# Cursor ghosts
 	match cur_tool:
@@ -2767,7 +3140,7 @@ func draw_overlay(o: Node2D) -> void:
 			o.draw_arc(mouse, rad, 0.0, TAU, 32, Color(1, 1, 1, 0.6), lw)
 		Tool.LIGHT:
 			o.draw_arc(mouse, radius_slider.value, 0.0, TAU, 48, Color(1, 0.85, 0.4, 0.5), lw)
-		Tool.POLYGON, Tool.WALL, Tool.RECT, Tool.ROOF:
+		Tool.POLYGON, Tool.WALL, Tool.ROOF:
 			o.draw_circle(mouse, 3.0 / z, sel_col)
 		Tool.OPENING:
 			# Preview where the opening will land (snapped onto the nearest wall).
@@ -2778,6 +3151,13 @@ func draw_overlay(o: Node2D) -> void:
 			gc.append(gc[0])
 			var gcol := Color(0.4, 1.0, 0.5, 0.9) if not sn.is_empty() else Color(1, 1, 1, 0.5)
 			o.draw_polyline(gc, gcol, 2.0 / z)
+		Tool.ANIMAL:
+			if drawing_patrol:
+				o.draw_circle(mouse, 3.0 / z, sel_col)
+				return
+			o.draw_arc(mouse, 12.0, 0.0, TAU, 20, Color(1, 1, 1, 0.6), lw)
+			if MapData.ANIMAL_DISPOSITIONS.keys()[maxi(animal_disp_opt.selected, 0)] == "hostile":
+				o.draw_arc(mouse, animal_aggro_spin.value * GRID, 0.0, TAU, 48, Color(0.9, 0.3, 0.3, 0.5), lw)
 		Tool.NPC:
 			if drawing_patrol:
 				o.draw_circle(mouse, 3.0 / z, sel_col)
@@ -2873,6 +3253,20 @@ func _draw_selection_outline(o: Node2D, z: float, lw: float, handles: bool = fal
 				o.draw_polyline(patrol, col, 2.0 / z)
 				if handles:
 					for p in n["patrol"]:
+						_handle(o, p, z)
+		"animal":
+			if sel_idx >= data["animals"].size():
+				return
+			var an: Dictionary = data["animals"][sel_idx]
+			o.draw_arc(an["pos"], 16.0, 0.0, TAU, 24, col, 2.0 / z)
+			if an["disposition"] == "hostile":  # aggro range: the player gets attacked inside this ring
+				o.draw_arc(an["pos"], float(an["aggro"]) * GRID, 0.0, TAU, 48, Color(0.9, 0.3, 0.3, 0.7), lw)
+			var apatrol := PackedVector2Array(an.get("patrol", PackedVector2Array()))
+			if apatrol.size() >= 2:
+				apatrol.append(apatrol[0])
+				o.draw_polyline(apatrol, col, 2.0 / z)
+				if handles:
+					for p in an["patrol"]:
 						_handle(o, p, z)
 		"light":
 			if sel_idx >= data["lights"].size():

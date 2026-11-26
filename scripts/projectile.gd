@@ -28,6 +28,10 @@ static func fire(parent: Node, weapon: String, from: Vector2, dir: Vector2, by: 
 	# Gunshots are loud: hostile NPCs within hearing range join the fight (see Combat.on_shot_heard).
 	if parent != null and parent.is_inside_tree():
 		parent.get_tree().call_group("combat", "on_shot_heard", from, by)
+	# Weapon upgrades the player bought with XP (only the player has an `upgrades` property).
+	if is_instance_valid(by) and "upgrades" in by:
+		var ups: Dictionary = by.get("upgrades")
+		damage_mul *= WeaponUpgrades.damage_mul(ups, weapon)
 	var spread: float = float(w["spread"]) * spread_mul
 	var speed: float = w["speed"]
 	for i in int(w.get("pellets", 1)):
@@ -83,6 +87,8 @@ func _physics_process(delta: float) -> void:
 				best_d = d
 				best = n
 	if best != null:
+		if "last_hit_dir" in best:
+			best.set("last_hit_dir", velocity.normalized())  # lets a killed NPC fall the way the shot was going
 		best.call("take_damage", damage, shooter if is_instance_valid(shooter) else null)
 		queue_free()
 		return
@@ -92,6 +98,8 @@ func _physics_process(delta: float) -> void:
 		var owner_node: Node = (col as Node).get_parent() if col is Node else null
 		if owner_node != null and owner_node.is_in_group("breakable"):
 			owner_node.call("take_damage", damage, shooter if is_instance_valid(shooter) else null)
+		elif owner_node is OpeningNode:
+			(owner_node as OpeningNode).shoot_out(velocity.normalized())  # windows shatter
 		queue_free()
 		return
 

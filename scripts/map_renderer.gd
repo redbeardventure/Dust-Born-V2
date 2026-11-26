@@ -11,6 +11,7 @@ var _terrain := Node2D.new()
 var _walls := Node2D.new()
 var _props := Node2D.new()
 var _npcs := Node2D.new()
+var _animals := Node2D.new()
 var _openings := Node2D.new()
 var _lights := Node2D.new()
 var _roofs := Node2D.new()
@@ -26,6 +27,7 @@ var _time := 0.0
 var _canopies: Array = []
 
 const CANOPY_FADE_ALPHA := 0.4
+const CHARACTER_OCCLUDER_LAYER := 2  # light occluder layer used by the player and NPCs
 
 static var _light_tex: Texture2D
 static var _water_shader: Shader
@@ -140,6 +142,7 @@ func _init() -> void:
 	_walls.name = "Walls"
 	_props.name = "Props"
 	_npcs.name = "Npcs"
+	_animals.name = "Animals"
 	_openings.name = "Openings"
 	_lights.name = "Lights"
 	add_child(_mod)
@@ -148,10 +151,25 @@ func _init() -> void:
 	add_child(_openings)
 	add_child(_props)
 	add_child(_npcs)
+	add_child(_animals)
 	add_child(_lights)
 	_roofs.name = "Roofs"
 	_roofs.z_index = ROOF_Z
 	add_child(_roofs)
+
+
+## Small round shadow caster for the player and NPCs. Only lights with "NPC Shadow" on
+## (shadow_item_cull_mask includes CHARACTER_OCCLUDER_LAYER) are blocked by it.
+static func character_occluder() -> LightOccluder2D:
+	var pts := PackedVector2Array()
+	for i in 12:
+		pts.append(Vector2.RIGHT.rotated(TAU * float(i) / 12.0) * 7.0)
+	var occ := OccluderPolygon2D.new()
+	occ.polygon = pts
+	var lo := LightOccluder2D.new()
+	lo.occluder = occ
+	lo.occluder_light_mask = CHARACTER_OCCLUDER_LAYER
+	return lo
 
 
 static func light_texture() -> Texture2D:
@@ -180,6 +198,7 @@ func rebuild_all() -> void:
 	rebuild_openings()  # also rebuilds the walls, which are cut around openings
 	rebuild_props()
 	rebuild_npcs()
+	rebuild_animals()
 	rebuild_roofs()
 	refresh_ambient()
 
@@ -210,6 +229,7 @@ func rebuild_terrain() -> void:
 	var bg := PackedVector2Array([Vector2.ZERO, Vector2(size.x, 0), size, Vector2(0, size.y)])
 	_terrain.add_child(_make_poly(str(data["background"]), bg, true))
 	_poly_nodes.clear()
+	_under_holders.clear()  # freed with the rest of the terrain; _build_walls recreates them
 	for p in data["polygons"]:
 		var pts: PackedVector2Array = p["points"]
 		if pts.size() >= 3:
@@ -220,6 +240,8 @@ func rebuild_terrain() -> void:
 			_poly_nodes.append(null)
 	if physics_enabled:
 		_build_water_blockers()
+	if _walls.get_child_count() > 0:
+		_build_walls()  # walls drawn under a polygon live in the terrain layer
 
 
 ## Water terrain nobody can walk on (player or NPCs). Sewer water is drawn as water but stays walkable.
@@ -571,13 +593,42 @@ static func _nearest_on_path(p: Vector2, pts: PackedVector2Array, closed: bool) 
 	return best
 
 
+## Where the wall being built draws: _walls (above all terrain), or a holder inside _terrain
+## placed right below the polygon the wall sits under, so walls and polygons share one draw order.
+var _wall_target: Node2D
+var _under_holders: Array = []
+
+
+## Holder for the visuals of a wall that sits below polygon `under`; null when it is above them all.
+func _terrain_holder(under: int) -> Node2D:
+	for k in range(under, _poly_nodes.size()):
+		var pn: Node2D = _poly_nodes[k]
+		if pn != null and is_instance_valid(pn):
+			var holder := Node2D.new()
+			_terrain.add_child(holder)
+			_terrain.move_child(holder, pn.get_index())
+			_under_holders.append(holder)
+			return holder
+	return null
+
+
 func _build_walls() -> void:
 	_clear(_walls)
+	for h in _under_holders:
+		if is_instance_valid(h):
+			h.get_parent().remove_child(h)
+			h.queue_free()
+	_under_holders.clear()
 	var openings: Array = data.get("openings", [])
 	for w in data["walls"]:
 		var pts: PackedVector2Array = w["points"]
 		if pts.size() < 2:
 			continue
+		_wall_target = _walls
+		if w.has("under") and _poly_nodes.size() == data["polygons"].size():
+			var holder := _terrain_holder(MapData.wall_under(data, w))
+			if holder != null:
+				_wall_target = holder
 		var closed: bool = w["closed"]
 		var width: float = w["width"]
 		var style: String = w.get("style", "wall")
@@ -587,7 +638,7 @@ func _build_walls() -> void:
 			rn.points = pts
 			rn.closed = closed
 			rn.width = width
-			_walls.add_child(rn)
+			_wall_target.add_child(rn)
 			continue
 		# Doors and windows cut a gap in the wall they sit on.
 		var cuts: Array = []
@@ -669,10 +720,10 @@ func _add_wall_piece(pts: PackedVector2Array, closed: bool, width: float, style:
 		edge = Color(0.1, 0.06, 0.03)
 		col_body = Color(0.42, 0.27, 0.15)
 		hi = Color(0.58, 0.4, 0.23)
-	_walls.add_child(_wall_line(pts, closed, width + 8.0, MapData.shadow_color(0.28), Vector2(5, 7), flat_ends))
-	_walls.add_child(_wall_line(pts, closed, width + 5.0, edge, Vector2.ZERO, flat_ends))
-	_walls.add_child(_wall_line(pts, closed, width, col_body, Vector2.ZERO, flat_ends))
-	_walls.add_child(_wall_line(pts, closed, width * 0.4, hi, Vector2.ZERO, flat_ends))
+	_wall_target.add_child(_wall_line(pts, closed, width + 8.0, MapData.shadow_color(0.28), Vector2(5, 7), flat_ends))
+	_wall_target.add_child(_wall_line(pts, closed, width + 5.0, edge, Vector2.ZERO, flat_ends))
+	_wall_target.add_child(_wall_line(pts, closed, width, col_body, Vector2.ZERO, flat_ends))
+	_wall_target.add_child(_wall_line(pts, closed, width * 0.4, hi, Vector2.ZERO, flat_ends))
 	var path := PackedVector2Array(pts)
 	if closed:
 		path.append(pts[0])
@@ -723,11 +774,21 @@ func rebuild_props() -> void:
 		node.position = pr["pos"]
 		node.rotation = pr["rot"]
 		node.scale = Vector2(sc, sc)
+		node.self_modulate.a = float(pr.get("opacity", 1.0))  # separate from modulate, which the canopy fade uses
 		if physics_enabled and MapData.LOOT_PROPS.has(pr["type"]):
 			node.make_interactive(str(pr.get("loot", "none")), bool(pr.get("locked", false)))  # selectable; barrels can be shot
+		if pr["type"] == MapData.WEAPON_PROP:
+			node.loot = str(pr.get("loot", "pistol"))  # the gun shown (editor and game)
+			if physics_enabled:
+				node.make_pickup()
 		if def.get("fade", false):
 			# Canopies and smoke draw above the player and fade when covering them.
-			node.z_index = 10
+			node.z_index = SMOKE_Z if pr["type"] == "smoke" else 10  # smoke covers everything, roofs and markers included
+			if pr["type"] == "smoke":
+				# Like the roofs: point lights don't touch it, the ambient colour still tints it.
+				var sm := CanvasItemMaterial.new()
+				sm.light_mode = CanvasItemMaterial.LIGHT_MODE_UNSHADED
+				node.material = sm
 			_canopies.append(node)
 		_props.add_child(node)
 		_prop_nodes.append(node)
@@ -814,13 +875,42 @@ func rebuild_npcs() -> void:
 		node.patrol = n["patrol"]
 		node.head = int(n.get("head", -1))
 		node.bounty = bool(n.get("bounty", false))
+		node.call_help = bool(n.get("call_help", false))
 		node.guard = bool(n.get("guard", false))
 		node.guard_dir = float(n.get("guard_dir", 90.0))
 		node.max_hp = maxi(int(n.get("hp", NpcNode.MAX_HP)), 1)
 		node.hp = node.max_hp
+		node.xp = maxi(int(n.get("xp", MapData.DEFAULT_NPC_XP)), 0)
+		node.actions_per_turn = clampi(int(n.get("actions", 1)), 1, MapData.MAX_ACTIONS)
+		node.move_tiles = clampi(int(n.get("speed", MapData.DEFAULT_NPC_SPEED)), 0, MapData.MAX_SPEED)
 		node.animate = physics_enabled
 		node.position = n["pos"]
 		_npcs.add_child(node)
+
+
+# ---------------------------------------------------------------- animals
+
+## Animals only wander and attack when physics_enabled is on (play-test); in the editor they stand still.
+func rebuild_animals() -> void:
+	_clear(_animals)
+	for a in data.get("animals", []):
+		var node := AnimalNode.new()
+		node.species = str(a["species"])
+		node.npc_name = str(MapData.ANIMALS.get(node.species, MapData.ANIMALS[MapData.ANIMAL_DEFAULT])["label"])
+		node.disposition = str(a["disposition"])
+		node.max_hp = maxi(int(a["hp"]), 1)
+		node.hp = node.max_hp
+		node.xp = maxi(int(a.get("xp", 0)), 0)
+		node.actions_per_turn = clampi(int(a.get("actions", 1)), 1, MapData.MAX_ACTIONS)
+		node.move_tiles = clampi(int(a.get("speed", MapData.ANIMALS.get(node.species, MapData.ANIMALS[MapData.ANIMAL_DEFAULT])["move"])), 0, MapData.MAX_SPEED)
+		node.dmg_min = int(a["dmg_min"])
+		node.dmg_max = int(a["dmg_max"])
+		node.aggro_tiles = float(a["aggro"])
+		node.color_key = str(a.get("color", MapData.SNAKE_COLOR_DEFAULT))
+		node.patrol = a.get("patrol", PackedVector2Array())
+		node.animate = physics_enabled
+		node.position = a["pos"]
+		_animals.add_child(node)
 
 
 # ---------------------------------------------------------------- lights
@@ -831,13 +921,13 @@ func rebuild_lights() -> void:
 	_light_nodes.clear()
 	_prop_lights.clear()
 	for l in data["lights"]:
-		_light_nodes.append(_add_light(l["pos"], l["radius"], l["color"], l["energy"], l["flicker"]))
+		_light_nodes.append(_add_light(l["pos"], l["radius"], l["color"], l["energy"], l["flicker"], bool(l.get("npc_shadow", false))))
 	var props: Array = data["props"]
 	for i in props.size():
 		var pr: Dictionary = props[i]
-		var lt: Dictionary = MapData.PROPS.get(pr["type"], {}).get("light", {})
+		var lt := MapData.prop_light(pr)
 		if not lt.is_empty():
-			_prop_lights[i] = _add_light(pr["pos"], float(lt["r"]) * float(pr["scale"]), lt["c"], float(lt["e"]), true)
+			_prop_lights[i] = _add_light(pr["pos"], lt["radius"], lt["color"], lt["energy"], lt["flicker"], bool(lt["npc_shadow"]))
 
 
 # ---------------------------------------------------------------- quick updates (editor)
@@ -855,14 +945,15 @@ func update_prop(i: int) -> void:
 	node.position = pr["pos"]
 	node.rotation = pr["rot"]
 	node.scale = Vector2(sc, sc)
+	node.self_modulate.a = float(pr.get("opacity", 1.0))
 	_restack_prop(node)
 	node.queue_redraw()  # the shadow direction depends on the rotation
 	if _prop_lights.has(i):
 		var l: PointLight2D = _prop_lights[i]
 		l.position = pr["pos"]
-		var lt: Dictionary = MapData.PROPS.get(pr["type"], {}).get("light", {})
+		var lt := MapData.prop_light(pr)
 		if not lt.is_empty():
-			l.texture_scale = float(lt["r"]) * sc / 128.0
+			l.texture_scale = float(lt["radius"]) / 128.0
 
 
 func update_light(i: int) -> void:
@@ -886,6 +977,19 @@ func update_npc(i: int) -> void:
 	node.queue_redraw()
 
 
+func update_animal(i: int) -> void:
+	if i < 0 or i >= _animals.get_child_count() or _animals.get_child_count() != data["animals"].size():
+		rebuild_animals()
+		return
+	var node := _animals.get_child(i) as AnimalNode
+	if node == null or node.is_queued_for_deletion():
+		rebuild_animals()
+		return
+	node.position = data["animals"][i]["pos"]
+	node.patrol = data["animals"][i].get("patrol", PackedVector2Array())
+	node.queue_redraw()
+
+
 ## Replaces just one terrain polygon's node (editor only; play-test water collision needs the full build).
 func update_polygon(i: int) -> void:
 	if physics_enabled or i < 0 or i >= _poly_nodes.size() or _poly_nodes.size() != data["polygons"].size():
@@ -905,8 +1009,10 @@ func update_polygon(i: int) -> void:
 	_poly_nodes[i] = n
 
 
-func _add_light(pos: Vector2, radius: float, color: Color, energy: float, flicker: bool) -> PointLight2D:
+func _add_light(pos: Vector2, radius: float, color: Color, energy: float, flicker: bool, npc_shadow := false) -> PointLight2D:
 	var l := PointLight2D.new()
+	# Walls and props occlude on layer 1; the player and NPCs occlude on layer 2 (CHARACTER_OCCLUDER_LAYER).
+	l.shadow_item_cull_mask = 1 | (CHARACTER_OCCLUDER_LAYER if npc_shadow else 0)
 	l.texture = light_texture()
 	l.texture_scale = radius / 128.0
 	l.position = pos
@@ -925,6 +1031,9 @@ func _add_light(pos: Vector2, radius: float, color: Color, energy: float, flicke
 
 ## Roofs draw above props, characters and projectiles (but below the on-map markers).
 const ROOF_Z := 18
+
+## Smoke draws above everything else on the map (roofs, markers, effects).
+const SMOKE_Z := 30
 ## Up to this many windows / open doors can be seen through at once, per roof.
 const MAX_VIEW_CONES := 8
 ## Farthest a viewer can see into a building through an opening (px).
@@ -943,7 +1052,7 @@ static func roof_shader() -> Shader:
 		_roof_shader = Shader.new()
 		_roof_shader.code = """
 shader_type canvas_item;
-
+render_mode unshaded;  // point lights don't touch roofs; the ambient CanvasModulate still tints them
 uniform vec2 viewer = vec2(0.0);
 uniform int cone_count = 0;
 uniform vec2 edge_a[8];
@@ -998,7 +1107,7 @@ static func roof_shaded_shader() -> Shader:
 		_roof_shaded_shader = Shader.new()
 		_roof_shaded_shader.code = """
 shader_type canvas_item;
-
+render_mode unshaded;  // point lights don't touch roofs; the ambient CanvasModulate still tints them
 uniform vec2 viewer = vec2(0.0);
 uniform int cone_count = 0;
 uniform vec2 edge_a[8];
@@ -1210,6 +1319,18 @@ func rebuild_roofs() -> void:
 		var poly := Polygon2D.new()
 		poly.polygon = pts
 		poly.uv = pts
+		if def.get("fit", false):
+			# Stretch one copy of the texture over the roof's bounding box (e.g. chimney tops).
+			var lo := pts[0]
+			var hi := pts[0]
+			for p in pts:
+				lo = Vector2(minf(lo.x, p.x), minf(lo.y, p.y))
+				hi = Vector2(maxf(hi.x, p.x), maxf(hi.y, p.y))
+			var span := Vector2(maxf(hi.x - lo.x, 1.0), maxf(hi.y - lo.y, 1.0))
+			var fitted := PackedVector2Array()
+			for p in pts:
+				fitted.append((p - lo) / span * 256.0)
+			poly.uv = fitted
 		poly.texture = MapData.get_texture(type)
 		poly.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
 		var shape := str(def.get("shape", "hip"))
@@ -1289,6 +1410,9 @@ func _link_roof_openings(item: Dictionary) -> void:
 			continue
 		if not (Geometry2D.is_point_in_polygon(op.position, pts) or MapData.dist_to_path(op.position, pts, true) < 24.0):
 			continue
+		# Which side of the wall is outside the roof? The badge sticks out there, above the roof.
+		var probe := op.position + Vector2(0, 30).rotated(op.rotation)
+		op.set_outside(-1.0 if Geometry2D.is_point_in_polygon(probe, pts) else 1.0)
 		if op.kind == "door":
 			doors.append(op)
 		else:

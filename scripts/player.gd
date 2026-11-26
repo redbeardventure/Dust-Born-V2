@@ -71,6 +71,21 @@ func collect_loot(kind: String) -> void:
 				owned_weapons.append(kind)
 
 
+## Sent when a gun is picked up off the ground (game_view shows the "new weapon" popup).
+signal weapon_picked(key: String)
+
+
+## Walking over a weapon prop: the gun joins the weapon wheel and is taken in hand.
+func pick_up_weapon(key: String) -> void:
+	if not Weapons.is_ranged(key):
+		return
+	if not owned_weapons.has(key):
+		owned_weapons.append(key)
+	fire_held = false
+	set_weapon(key)
+	weapon_picked.emit(key)
+
+
 func add_key() -> void:
 	keys += 1
 	notice.emit("Picked up a key")
@@ -81,6 +96,34 @@ func add_gold(n: int) -> void:
 		return
 	gold += n
 	gold_changed.emit(gold, n)
+
+
+## Experience points, earned by killing NPCs and animals.
+signal xp_changed(total: int, added: int)
+var xp := 0
+## Weapon upgrades bought with XP (see weapon_upgrades.gd): weapon key -> {stat -> level}.
+var upgrades := {}
+
+
+## Buys the next level of `stat` for `weapon` if there is XP for it. Returns true on success.
+func buy_upgrade(weapon_key: String, stat: String) -> bool:
+	var price := WeaponUpgrades.cost(upgrades, weapon_key, stat)
+	if price <= 0 or xp < price:
+		return false
+	xp -= price
+	var w: Dictionary = upgrades.get(weapon_key, {})
+	w[stat] = WeaponUpgrades.level(upgrades, weapon_key, stat) + 1
+	upgrades[weapon_key] = w
+	xp_changed.emit(xp, 0)
+	return true
+
+
+func add_xp(n: int) -> void:
+	if n <= 0:
+		return
+	xp += n
+	xp_changed.emit(xp, n)
+
 
 var map_size := Vector2(2048, 1728)
 var facing := Vector2.DOWN
@@ -95,6 +138,7 @@ var _print_dist := 0.0
 var _print_left := true
 var _step_amount := 0.0  # 0 = standing, 1 = walking (eases in/out so stopping isn't a snap)
 var _ammo := {}  # weapon key -> shots left; missing = full magazine
+var _reload_total := 1.0  # length of the reload in progress (for the progress bar)
 var _reload_left := 0.0  # seconds until the reload finishes (0 = not reloading)
 ## Locked-on NPC (click it or press Tab). Space / F fire at it. Cleared when it dies or gets too far away.
 var target: Node2D = null
@@ -136,6 +180,8 @@ func _ready() -> void:
 	circle.radius = 10.0
 	cs.shape = circle
 	add_child(cs)
+
+	add_child(MapRenderer.character_occluder())  # casts shadows from lights that have "NPC Shadow" on
 
 	var lantern := PointLight2D.new()
 	lantern.texture = MapRenderer.light_texture()
@@ -203,9 +249,13 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	_cooldown = maxf(_cooldown - delta, 0.0)
 	_tick_reload(delta)
+	_tick_rifle_eject(delta)
 	_since_shot += delta
 	if _punch_t > 0.0:
 		_punch_t = maxf(_punch_t - delta, 0.0)
+		queue_redraw()
+	if _kick_t > 0.0:
+		_kick_t = maxf(_kick_t - delta, 0.0)
 		queue_redraw()
 	if weapon_drawn and not turn_mode and not is_instance_valid(target) and _since_shot > HOLSTER_AFTER:
 		holster()  # drawn by firing at nothing: put it away after a quiet spell
@@ -550,7 +600,7 @@ func is_reloading() -> bool:
 func reload_progress() -> float:
 	if not is_reloading() or not Weapons.is_ranged(weapon):
 		return 1.0
-	return 1.0 - _reload_left / float(Weapons.RANGED[weapon]["reload"])
+	return 1.0 - _reload_left / maxf(_reload_total, 0.001)
 
 
 ## Starts refilling the magazine (R, or automatically when it runs dry).
@@ -559,19 +609,61 @@ func reload() -> void:
 		return
 	if turn_mode and not (my_turn and action_left):
 		return  # turn-based: reloading is your turn's action
-	var spent := Weapons.mag_size(weapon) - ammo()
+	var spent := _casings_left_to_eject(Weapons.mag_size(weapon) - ammo())
 	if turn_mode:
 		_spend_action()
 		_clear_path()
 		_ammo[weapon] = Weapons.mag_size(weapon)  # takes the action instead of real time
 	else:
-		_reload_left = float(Weapons.RANGED[weapon]["reload"])
+		# Only the missing rounds are loaded, so a partly full magazine reloads proportionally faster.
+		var missing := Weapons.mag_size(weapon) - ammo()
+		_reload_total = float(Weapons.RANGED[weapon]["reload"]) * WeaponUpgrades.reload_mul(upgrades, weapon) * float(missing) / float(Weapons.mag_size(weapon))
+		_reload_left = _reload_total
 	# Throw out one spent casing per round being reloaded, from the gun (part way along it).
-	var gun := Weapons.muzzle_offset(weapon, facing) * 0.55
+	if weapon != "flintlock":  # a flintlock has no brass: its wad leaves with the shot
+		_eject_casings(spent)
+
+
+func _eject_casings(count: int, gun_weapon: String = "") -> void:
+	var key := weapon if gun_weapon == "" else gun_weapon
+	var gun := Weapons.muzzle_offset(key, facing) * 0.55
+	if gun != Vector2.ZERO:
+		gun -= facing * _gun_pull  # the gun is drawn back for a close target
+	if key == "rifle" and gun != Vector2.ZERO:
+		gun -= facing * RIFLE_EJECT_BACK  # a little further back along the gun, towards the stock
+		gun += Vector2(-facing.y, facing.x) * RIFLE_EJECT_SIDE  # ejection port is on the gun's right
 	if gun == Vector2.ZERO:
 		gun = facing * 12.0 + Vector2(-facing.y, facing.x) * 6.0
-	ShellCasings.spawn(get_tree().current_scene, global_position + gun, facing, spent,
-			"shell" if weapon == "shotgun" else "brass")
+	ShellCasings.spawn(get_tree().current_scene, global_position + gun, facing, count,
+			"shell" if key == "shotgun" else "brass")
+
+
+## Rifle casings are thrown out between shots (halfway through the delay), so a reload only
+## has to eject the ones not already out.
+const RIFLE_EJECT_AT := 0.5
+const RIFLE_EJECT_BACK := 4.0   # px the ejection point sits back along the gun (towards the stock)
+const RIFLE_EJECT_SIDE := 8.0   # px to the right of the barrel line that casings come out
+var _rifle_eject_timer := 0.0   # > 0 while a casing is waiting to be ejected
+var _rifle_ejected := 0         # casings already thrown out since the last reload
+
+
+func _casings_left_to_eject(spent: int) -> int:
+	if weapon != "rifle":
+		return spent
+	var pending := 1 if _rifle_eject_timer > 0.0 else 0
+	var left := maxi(spent - _rifle_ejected - pending, 0)
+	_rifle_ejected = 0
+	return left
+
+
+func _tick_rifle_eject(delta: float) -> void:
+	if _rifle_eject_timer <= 0.0:
+		return
+	_rifle_eject_timer -= delta
+	if _rifle_eject_timer <= 0.0:
+		_rifle_eject_timer = 0.0
+		_rifle_ejected += 1
+		_eject_casings(1, "rifle")
 
 
 func _tick_reload(delta: float) -> void:
@@ -590,11 +682,52 @@ func _muzzle_clear(muzzle: Vector2) -> bool:
 	return get_world_2d().direct_space_state.intersect_ray(q).is_empty()
 
 
+## Close quarters: px the held gun is drawn back along the aim so its barrel stops short of an
+## NPC / animal standing right in front of it (eased toward gun_pull_for() each frame).
+var _gun_pull := 0.0
+const GUN_PULL_SPEED := 160.0  # px/s the gun slides back / forward
+
+
+## How far the gun must come back (along `dir`) so the muzzle stays just in front of the nearest
+## body in the barrel's line, instead of poking over or past it. 0 when nothing is that close.
+## The muzzle ends at most 8 px short of the body's centre, so a shot from it still hits.
+func gun_pull_for(dir: Vector2) -> float:
+	if not weapon_drawn or not Weapons.is_ranged(weapon) or dir.length() < 0.5:
+		return 0.0
+	dir = dir.normalized()
+	var off := Weapons.muzzle_offset(weapon, dir)
+	if off == Vector2.ZERO and weapon != "pistol":
+		off = dir * (Weapons.length(weapon) + 2.0)  # line-art gun: tip is this far out
+	var reach := off.dot(dir)
+	if reach <= 4.0:
+		return 0.0
+	var barrel_side := off - dir * reach  # the barrel runs this far beside the body centre
+	var pull := 0.0
+	for n in get_tree().get_nodes_in_group("combatants"):
+		if n == self or not (n is Node2D) or (n as Node).is_queued_for_deletion() or int(n.get("hp")) <= 0:
+			continue
+		var r: float = float(n.call("body_radius")) if n.has_method("body_radius") else 11.0
+		var to := (n as Node2D).global_position - global_position - barrel_side
+		var along := to.dot(dir)
+		if along <= 0.0 or absf(to.cross(dir)) > r + 4.0:
+			continue  # behind the shooter, or not in line with the barrel
+		pull = maxf(pull, reach - (along - minf(r, Projectile.HIT_RADIUS - 2.0)))
+	return clampf(pull, 0.0, reach - 4.0)
+
+
+## The gun's muzzle (world position) when aiming along `dir`, drawn back for close targets.
+func _muzzle_at(dir: Vector2) -> Vector2:
+	var off := Weapons.muzzle_offset(weapon, dir)
+	if off == Vector2.ZERO:
+		return global_position
+	return global_position + off - dir.normalized() * gun_pull_for(dir)
+
+
 ## Where a shot aimed at `at` leaves from: the gun's muzzle, or the body when a wall is in the way
 ## (same rule as shoot_at). Used by the shot preview.
 func shot_origin(at: Vector2) -> Vector2:
 	var dir := (at - global_position).normalized()
-	var muzzle := global_position + Weapons.muzzle_offset(weapon, dir)
+	var muzzle := _muzzle_at(dir)
 	if muzzle != global_position and _muzzle_clear(muzzle):
 		return muzzle
 	return global_position
@@ -626,13 +759,47 @@ func shoot_at(target: Vector2) -> void:
 		return
 	dir = dir.normalized()
 	facing = dir
-	_cooldown = float(Weapons.RANGED[weapon]["cooldown"])
+	_cooldown = float(Weapons.RANGED[weapon]["cooldown"]) * WeaponUpgrades.delay_mul(upgrades, weapon)
 	_since_shot = 0.0
 	_ammo[weapon] = ammo() - 1
+	if weapon == "rifle":
+		_rifle_eject_timer = float(Weapons.RANGED[weapon]["cooldown"]) * RIFLE_EJECT_AT
+	if weapon == "flintlock":
+		# Flintlock: the pan flashes and puffs smoke by the stock, then the main shot follows.
+		var right := Vector2(-dir.y, dir.x)
+		MuzzleFlash.spawn_lock(get_tree().current_scene, global_position + Weapons.lock_offset(weapon, dir), right)
+		var fired_with := weapon
+		get_tree().create_timer(Weapons.FLINTLOCK_DELAY).timeout.connect(func() -> void:
+			if is_inside_tree() and hp > 0 and weapon == fired_with:
+				_release_shot(target, (target - global_position).normalized()))
+		queue_redraw()
+		return
+	_release_shot(target, dir)
+
+
+## Sends the shot out of the muzzle (after any weapon-specific lead-in) and handles what follows it.
+const KICK_TIME := 0.22   # seconds the shotgun / flintlock recoil animation lasts
+const KICK_DIST := 6.0    # px the gun jerks back at the peak of the kick
+var _kick_t := 0.0        # > 0 while the gun is kicking back
+
+
+## How far (px) the held gun is pushed back right now: a sharp jerk back, then easing forward.
+func _kick_amount() -> float:
+	if _kick_t <= 0.0:
+		return 0.0
+	var k := 1.0 - _kick_t / KICK_TIME  # 0..1 through the animation
+	return KICK_DIST * (k / 0.2 if k < 0.2 else 1.0 - (k - 0.2) / 0.8)
+
+
+func _release_shot(target: Vector2, dir: Vector2) -> void:
+	if dir.length() < 0.5:
+		return
+	if weapon == "shotgun" or weapon == "flintlock":
+		_kick_t = KICK_TIME
 	# Shots leave from the gun's muzzle when the weapon has an in-hand image (Projectile.fire adds 14px
 	# along `dir`, so that is subtracted here). Re-aim from the muzzle so the shot still meets the target.
 	var from := global_position
-	var muzzle := global_position + Weapons.muzzle_offset(weapon, dir)
+	var muzzle := _muzzle_at(dir)  # drawn back when an NPC / animal is right in front of the gun
 	if muzzle != global_position and _muzzle_clear(muzzle):
 		var aim := target - muzzle
 		if aim.length() > 20.0:
@@ -647,6 +814,8 @@ func shoot_at(target: Vector2) -> void:
 		var spread := Weapons.spread_mul_at(weapon, global_position.distance_to(target))
 		Projectile.fire(get_tree().current_scene, weapon, from, dir, self, spread)
 	MuzzleFlash.spawn(get_tree().current_scene, from + dir * 14.0, dir)  # fire + smoke at the barrel tip
+	if weapon == "flintlock":
+		ShellCasings.spawn(get_tree().current_scene, from + dir * 14.0, dir, 1, "wad")  # burnt powder wad
 	_alert_shot_at(target)
 	var shot_at: NpcNode = self.target as NpcNode if is_instance_valid(self.target) else null  # a shot at an NPC alerts it, even when it misses
 	if shot_at != null:
@@ -882,7 +1051,7 @@ func _draw_arms(under: bool) -> void:
 				hand = _fist_pos(s)
 				hanging = false
 		elif weapon_drawn and Weapons.is_ranged(weapon):
-			var hold := side * 9.0 + facing * 2.0
+			var hold := side * 9.0 + facing * (2.0 - _gun_pull)  # hands follow the gun when it is drawn back
 			if s > 0.0:
 				hand = hold
 				hanging = false
@@ -982,10 +1151,11 @@ func play_card(kind: String) -> bool:
 			aimed = true  # applies to this turn's shot
 		"reload":
 			# Quick reload: refill without using the turn's action.
-			var spent := Weapons.mag_size(weapon) - ammo()
+			var spent := _casings_left_to_eject(Weapons.mag_size(weapon) - ammo())
 			_ammo[weapon] = Weapons.mag_size(weapon)
-			ShellCasings.spawn(get_tree().current_scene, global_position + facing * 12.0, facing, spent,
-					"shell" if weapon == "shotgun" else "brass")
+			if weapon != "flintlock":
+				ShellCasings.spawn(get_tree().current_scene, global_position + facing * 12.0, facing, spent,
+						"shell" if weapon == "shotgun" else "brass")
 	card_played = true
 	queue_redraw()
 	return true
@@ -1821,10 +1991,11 @@ func _draw() -> void:
 		pass  # the revolver is the animated sprite from weapons.tscn (see _sync_revolver)
 	elif weapon_drawn:
 		var hold := facing.orthogonal() * 9.0 + facing * 2.0
-		if Weapons.draw_held_image(self, weapon, facing, hold, bs):
+		# _gun_pull draws the gun back (like the recoil kick) when a body is right in front of it.
+		if Weapons.draw_held_image(self, weapon, facing, hold, bs, _kick_amount() + _gun_pull):
 			draw_set_transform(Vector2.ZERO, 0.0, xf)  # the image call resets the transform
 		else:
-			Weapons.draw_held(self, weapon, facing, hold)
+			Weapons.draw_held(self, weapon, facing, hold - facing * _gun_pull)
 	else:
 		_draw_holstered()
 	_draw_hat()
@@ -1880,7 +2051,7 @@ func _sync_revolver(delta: float) -> void:
 	# Holstered it sits at the player's right side; drawing slides it forward into the hand.
 	_rev_blend = move_toward(_rev_blend, 1.0 if weapon_drawn else 0.0, delta / REV_MOVE_TIME)
 	var holstered_at := right * REV_HOLSTER_SIDE + facing * REV_HOLSTER_REACH
-	var drawn_at := facing * REV_REACH + right * REV_SIDE
+	var drawn_at := facing * (REV_REACH - _gun_pull) + right * REV_SIDE  # drawn back for a close target
 	_revolver.position = holstered_at.lerp(drawn_at, smoothstep(0.0, 1.0, _rev_blend)) * bs
 	_revolver.rotation = facing.angle() + PI * 0.5
 	_revolver.scale = Vector2(REV_SCALE, REV_SCALE) * bs
@@ -1908,6 +2079,10 @@ func _sync_revolver(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
+	var pull_before := _gun_pull
+	_gun_pull = move_toward(_gun_pull, gun_pull_for(facing), GUN_PULL_SPEED * delta)
+	if _gun_pull != pull_before:
+		queue_redraw()
 	_sync_revolver(delta)
 
 

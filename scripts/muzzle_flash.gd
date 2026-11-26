@@ -11,6 +11,7 @@ const PUFFS := 6
 var dir := Vector2.RIGHT
 var _t := 0.0
 var _light: PointLight2D
+var _light_energy := 1.6  # peak brightness of the flash light
 var _puffs: Array = []  # [{pos, vel, r, grow, shade}]
 var _flames := PackedVector2Array()
 
@@ -24,6 +25,28 @@ static func spawn(parent: Node, at: Vector2, direction: Vector2) -> MuzzleFlash:
 	return m
 
 
+## Small priming flash and smoke puff at a flintlock's lock (the pan beside the stock).
+static func spawn_lock(parent: Node, at: Vector2, direction: Vector2) -> MuzzleFlash:
+	var m := spawn(parent, at, direction)
+	m.scale = Vector2(0.55, 0.55)
+	m.add_puffs(5, 1.3)  # the priming powder throws up a good bit of smoke
+	m._light_energy = 2.6  # a brighter priming flash
+	m._light.texture_scale = 0.9
+	return m
+
+
+## Adds `count` smoke puffs; `size` scales how big they start and how fast they grow.
+func add_puffs(count: int, size: float = 1.0) -> void:
+	for i in count:
+		_puffs.append({
+			"pos": Vector2(randf_range(0.0, 6.0), randf_range(-2.0, 2.0)),
+			"vel": Vector2(randf_range(18.0, 55.0), randf_range(-14.0, 14.0)),
+			"r": randf_range(2.5, 4.5) * size,
+			"grow": randf_range(9.0, 16.0) * size,
+			"shade": randf_range(0.62, 0.82),
+		})
+
+
 func _ready() -> void:
 	rotation = dir.angle()  # local +x = firing direction
 	# Jagged flame shape, slightly different every shot.
@@ -33,25 +56,18 @@ func _ready() -> void:
 		var r := (randf_range(9.0, 14.0) if i % 2 == 0 else randf_range(3.0, 5.0)) * (1.0 - absf(a) * 0.5)
 		_flames.append(Vector2(cos(a), sin(a)) * r)
 	_flames.append(Vector2(-1.5, 0))
-	for i in PUFFS:
-		_puffs.append({
-			"pos": Vector2(randf_range(0.0, 6.0), randf_range(-2.0, 2.0)),
-			"vel": Vector2(randf_range(18.0, 55.0), randf_range(-14.0, 14.0)),
-			"r": randf_range(2.5, 4.5),
-			"grow": randf_range(9.0, 16.0),
-			"shade": randf_range(0.62, 0.82),
-		})
+	add_puffs(PUFFS)
 	_light = PointLight2D.new()
 	_light.texture = MapRenderer.light_texture()
 	_light.texture_scale = 0.6
 	_light.color = Color(1.0, 0.75, 0.35)
-	_light.energy = 1.6
+	_light.energy = _light_energy
 	add_child(_light)
 
 
 func _process(delta: float) -> void:
 	_t += delta
-	_light.energy = maxf(0.0, 1.6 * (1.0 - _t / (FLASH_TIME * 1.5)))
+	_light.energy = maxf(0.0, _light_energy * (1.0 - _t / (FLASH_TIME * 1.5)))
 	for p in _puffs:
 		p["pos"] += p["vel"] * delta
 		p["vel"] *= pow(0.12, delta)  # smoke slows quickly after leaving the barrel

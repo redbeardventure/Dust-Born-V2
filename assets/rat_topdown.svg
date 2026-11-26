@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32" viewBox="0 0 64 32">
+  <!-- Facing right (+X) -->
+  <!-- Tail -->
+  <path d="M16 16 C10 16 8 22 3 21 C1 20.6 1 18 2 17" fill="none" stroke="#c99a8a" stroke-width="2" stroke-linecap="round"/>
+  <!-- Legs -->
+  <ellipse cx="22" cy="7" rx="4" ry="2" fill="#4a3b32" stroke="#1e1612" stroke-width="0.8"/>
+  <ellipse cx="22" cy="25" rx="4" ry="2" fill="#4a3b32" stroke="#1e1612" stroke-width="0.8"/>
+  <ellipse cx="42" cy="9" rx="3.5" ry="1.8" fill="#4a3b32" stroke="#1e1612" stroke-width="0.8"/>
+  <ellipse cx="42" cy="23" rx="3.5" ry="1.8" fill="#4a3b32" stroke="#1e1612" stroke-width="0.8"/>
+  <!-- Body -->
+  <ellipse cx="29" cy="16" rx="17" ry="9.5" fill="#6b5546" stroke="#1e1612" stroke-width="1.2"/>
+  <path d="M16 16 L44 16" stroke="#54433a" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Head -->
+  <path d="M42 16 C42 10 49 8 54 11 L62 15 C63 15.5 63 16.5 62 17 L54 21 C49 24 42 22 42 16 Z" fill="#7a6455" stroke="#1e1612" stroke-width="1.2" stroke-linejoin="round"/>
+  <!-- Ears -->
+  <ellipse cx="46" cy="9.5" rx="3" ry="2.8" fill="#d9a7a0" stroke="#1e1612" stroke-width="0.9"/>
+  <ellipse cx="46" cy="22.5" rx="3" ry="2.8" fill="#d9a7a0" stroke="#1e1612" stroke-width="0.9"/>
+  <!-- Eyes -->
+  <circle cx="52" cy="12.5" r="1.4" fill="#d41f1f"/>
+  <circle cx="52" cy="19.5" r="1.4" fill="#d41f1f"/>
+  <!-- Nose -->
+  <circle cx="62" cy="16" r="1.5" fill="#d96c7a"/>
+  <!-- Whiskers -->
+  <path d="M60 14.5 L64 12 M60 17.5 L64 20" stroke="#d8cfc4" stroke-width="0.5" stroke-linecap="round"/>
+</svg>

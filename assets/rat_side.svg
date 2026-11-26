@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="40" viewBox="0 0 64 40">
+  <!-- Tail -->
+  <path d="M14 27 C6 27 3 20 6 14 C7 11 10 10 12 11" fill="none" stroke="#c99a8a" stroke-width="2" stroke-linecap="round"/>
+  <!-- Back legs -->
+  <path d="M20 30 L17 37 L22 37 L25 31 Z" fill="#4a3b32" stroke="#1e1612" stroke-width="1" stroke-linejoin="round"/>
+  <!-- Front legs -->
+  <path d="M40 30 L40 37 L45 37 L44 30 Z" fill="#4a3b32" stroke="#1e1612" stroke-width="1" stroke-linejoin="round"/>
+  <!-- Body -->
+  <path d="M12 27 C12 17 24 12 34 14 C42 15 48 20 50 25 C50 31 40 33 30 33 C20 33 12 32 12 27 Z" fill="#6b5546" stroke="#1e1612" stroke-width="1.2" stroke-linejoin="round"/>
+  <!-- Belly highlight -->
+  <path d="M20 30 C28 33 40 32 47 28 C44 32 36 34 28 34 C24 34 21 32 20 30 Z" fill="#8a7566"/>
+  <!-- Head -->
+  <path d="M44 20 C47 16 54 16 58 21 L62 24 C62 26 59 28 55 28 C49 29 44 27 44 20 Z" fill="#7a6455" stroke="#1e1612" stroke-width="1.2" stroke-linejoin="round"/>
+  <!-- Ear -->
+  <ellipse cx="47.5" cy="17.5" rx="3.2" ry="3.8" fill="#d9a7a0" stroke="#1e1612" stroke-width="1"/>
+  <!-- Nose -->
+  <circle cx="62" cy="24" r="1.4" fill="#d96c7a"/>
+  <!-- Eye -->
+  <circle cx="54" cy="21.5" r="1.6" fill="#d41f1f"/>
+  <circle cx="54.4" cy="21.1" r="0.5" fill="#ffffff"/>
+  <!-- Teeth -->
+  <path d="M57 27.5 L57.6 30 L58.8 27.4 Z" fill="#f1e8d0" stroke="#1e1612" stroke-width="0.4"/>
+  <!-- Whiskers -->
+  <path d="M60 25 L64 23 M60 26 L64 27" stroke="#d8cfc4" stroke-width="0.5" stroke-linecap="round"/>
+</svg>

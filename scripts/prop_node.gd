@@ -22,6 +22,46 @@ const CRATE_HP := 50
 ## Sent when shot apart, so a player targeting it drops the target at once.
 signal defeated(node: Node)
 
+# ---- weapon pickup ("weapon" prop; the gun is in `loot`) ----
+const PICKUP_RANGE := 22.0  # px from the gun to the player's centre
+const WEAPON_BOX := 34.0  # px the gun picture is drawn in
+const RING_RADIUS := 22.0  # selection ring around the gun
+var _pickup_live := false  # play-test: pulses in size and can be picked up
+var _t := 0.0
+var _smoke_t := 0.0  # drives the drifting smoke animation
+
+
+## Play-test only: the gun floats (eases smaller and back) and is picked up when the player walks over it.
+func make_pickup() -> void:
+	_pickup_live = true
+
+
+func _tick_pickup(delta: float) -> void:
+	_t += delta
+	var p := get_tree().get_first_node_in_group("player") as Node2D
+	if p != null and p.has_method("pick_up_weapon") and p.global_position.distance_to(global_position) < PICKUP_RANGE * maxf(scale.x, 1.0):
+		_pickup_live = false
+		p.call("pick_up_weapon", loot)
+		queue_free()
+		return
+	queue_redraw()
+
+
+func _draw_weapon_pickup() -> void:
+	if not Weapons.is_ranged(loot):
+		return
+	# Seen from above, "floating" reads as the gun drifting toward and away from the camera:
+	# it eases between full size (raised) and a bit smaller (lowered) on a smooth cosine curve.
+	var rise := 1.0  # 0 = lowest, 1 = highest
+	if _pickup_live:
+		rise = 0.5 + 0.5 * cos(_t * 2.2)
+	var s := lerpf(0.86, 1.0, rise)
+	# Selection ring: a steady ring around the gun (dark edge under a light line so it shows on any ground).
+	draw_arc(Vector2.ZERO, RING_RADIUS, 0.0, TAU, 40, Color(0, 0, 0, 0.45), 3.5)
+	draw_arc(Vector2.ZERO, RING_RADIUS, 0.0, TAU, 40, Color(1.0, 0.92, 0.55, 0.95), 1.8)
+	# The gun picture stays upright whatever the prop's rotation.
+	Weapons.draw_icon_at(self, loot, Vector2.ZERO, WEAPON_BOX * s, -rotation)
+
 
 ## Makes a barrel/crate targetable in play-test (group "containers") and shootable
 ## (group "breakable": projectiles that hit their collision call take_damage).
@@ -233,6 +273,8 @@ func _draw() -> void:
 			_draw_campfire(rng)
 		"stump":
 			_draw_stump()
+		"fireplace":
+			_draw_fireplace(rng)
 		"stall":
 			_draw_stall()
 		"fountain":
@@ -251,8 +293,6 @@ func _draw() -> void:
 			_draw_lilypad(rng)
 		"mushroom":
 			_draw_mushroom(rng)
-		"wisp":
-			_draw_wisp()
 		"wagon_wheel":
 			_draw_wagon_wheel()
 		"wagon_hitch":
@@ -267,6 +307,8 @@ func _draw() -> void:
 			_draw_sacks(rng)
 		"wagon_lantern":
 			_draw_wagon_lantern()
+		"weapon":
+			_draw_weapon_pickup()
 	if locked and not opened:
 		_draw_padlock()
 
@@ -457,7 +499,14 @@ func _draw_smoke(rng: RandomNumberGenerator) -> void:
 		var a := rng.randf() * TAU
 		var d := rng.randf_range(0.0, 0.62) * r
 		var cr := rng.randf_range(0.28, 0.48) * r
-		var c := Vector2(cos(a), sin(a)) * d
+		# Animation: each puff slowly circles the cloud centre, swells and shrinks, and bobs a little.
+		# Speeds come from the puff index so the random layout from the seed is unchanged.
+		var spin := (0.10 + 0.05 * float(i % 4)) * (1.0 if i % 2 == 0 else -1.0)
+		var phase := float(i) * 1.7
+		a += _smoke_t * spin
+		d *= 1.0 + 0.18 * sin(_smoke_t * 0.7 + phase)
+		cr *= 1.0 + 0.10 * sin(_smoke_t * 0.9 + phase * 1.3)
+		var c := Vector2(cos(a), sin(a)) * d + Vector2(sin(_smoke_t * 0.5 + phase), cos(_smoke_t * 0.4 + phase)) * 4.0
 		var g := rng.randf_range(0.34, 0.56)
 		draw_colored_polygon(_blob(cr, 12, 0.14, rng, c), Color(g * 0.7, g * 0.7, g * 0.74, 0.9))
 		draw_colored_polygon(_blob(cr * 0.75, 12, 0.14, rng, c + _u(Vector2(-cr * 0.12, -cr * 0.15))), Color(g, g, g * 1.04, 0.9))
@@ -643,11 +692,68 @@ func _draw_campfire(rng: RandomNumberGenerator) -> void:
 
 
 func _process(delta: float) -> void:
-	if kind == "campfire":
+	if _pickup_live:
+		_tick_pickup(delta)
+	if kind == "campfire" or kind == "fireplace":
+		queue_redraw()
+	if kind == "smoke":
+		_smoke_t += delta
 		queue_redraw()
 	if _hit_flash > 0.0:  # barrel hit flash fading out
 		_hit_flash = maxf(_hit_flash - delta, 0.0)
 		queue_redraw()
+
+
+## Square stone hearth: a border of fitted stones round a dark pit with glowing coals and flames.
+func _draw_fireplace(rng: RandomNumberGenerator) -> void:
+	var t := Time.get_ticks_msec() / 1000.0 + float(seed_v) * 1.7
+	var pulse := 1.0 + 0.08 * sin(t * 9.0) + 0.05 * sin(t * 17.0)
+	# Warm glow spilling onto the floor
+	draw_circle(Vector2.ZERO, 46.0, Color(1.0, 0.5, 0.15, 0.06 * pulse))
+	draw_circle(Vector2.ZERO, 36.0, Color(1.0, 0.55, 0.2, 0.10 * pulse))
+	# Square stone border: 60x60 slab, 4 stones per side along a 12 px wide frame
+	var half := 30.0
+	draw_rect(Rect2(-half, -half, half * 2.0, half * 2.0), Color("2b2824"))
+	var n := 5
+	var step := half * 2.0 / float(n)
+	for side in 4:
+		for i in n:
+			var along := -half + step * (float(i) + 0.5)
+			var pos := Vector2(along, -half + 6.0)
+			pos = pos.rotated(PI * 0.5 * float(side))
+			var stone := Color("7c786f").lerp(Color("a39f94"), rng.randf()).darkened(rng.randf() * 0.2)
+			var sr := Rect2(pos - Vector2(step, 12.0) * 0.5 + Vector2(0.5, 0.5), Vector2(step, 12.0) - Vector2(1, 1))
+			if side % 2 == 1:
+				sr = Rect2(pos - Vector2(12.0, step) * 0.5 + Vector2(0.5, 0.5), Vector2(12.0, step) - Vector2(1, 1))
+			draw_rect(sr, stone)
+			draw_rect(Rect2(sr.position, Vector2(sr.size.x, 1.5)), stone.lightened(0.18))
+			draw_rect(sr, Color(0.08, 0.07, 0.06, 0.6), false, 1.0)
+	draw_rect(Rect2(-half, -half, half * 2.0, half * 2.0), Color(0.08, 0.07, 0.06, 0.9), false, 1.5)
+	# Ash pit and coals
+	draw_rect(Rect2(-18, -18, 36, 36), Color("15110e"))
+	draw_rect(Rect2(-16, -16, 32, 32), Color("3a1a0e"))
+	draw_rect(Rect2(Vector2(-12, -12) * pulse, Vector2(24, 24) * pulse), Color("b8300f"))
+	# Logs
+	for i in 3:
+		var a2 := float(i) * PI / 3.0 + 0.5
+		var d := Vector2(cos(a2), sin(a2)) * 10.0
+		draw_line(-d, d, Color("3a2412"), 4.5)
+		draw_line(-d, d, Color("5c3c1e"), 2.2)
+	# Flames
+	for i in 6:
+		var a3 := TAU * float(i) / 6.0 + 0.4 * sin(t * 2.0 + float(i))
+		var dir := Vector2(cos(a3), sin(a3))
+		var side := dir.orthogonal()
+		var len := (11.0 + 3.5 * sin(t * 7.0 + float(i) * 2.3) + 2.0 * sin(t * 13.0 + float(i))) * pulse
+		draw_colored_polygon(PackedVector2Array([dir * 2.0 + side * 3.6, dir * len, dir * 2.0 - side * 3.6]), Color("e8501a"))
+		draw_colored_polygon(PackedVector2Array([dir * 1.5 + side * 2.2, dir * len * 0.65, dir * 1.5 - side * 2.2]), Color("ff9a28"))
+	draw_circle(Vector2.ZERO, 5.5 * pulse, Color("ff9a28"))
+	draw_circle(Vector2.ZERO, 3.0 * (1.0 + 0.15 * sin(t * 12.0)), Color("ffe27a"))
+	# Rising sparks
+	for i in 4:
+		var ph := fposmod(t * 0.7 + float(i) * 0.25, 1.0)
+		var ang := float(i) * 2.1 + t * 0.5
+		draw_circle(Vector2(cos(ang), sin(ang)) * (5.0 + ph * 18.0), 1.3 * (1.0 - ph), Color(1.0, 0.7, 0.2, 1.0 - ph))
 
 
 func _draw_stump() -> void:
@@ -923,11 +1029,3 @@ func _draw_mushroom(rng: RandomNumberGenerator) -> void:
 		draw_circle(c, r, Color("a8342e") if i != 1 else Color("c8a46a"))
 		draw_circle(c, r * 0.55, Color("d4524a") if i != 1 else Color("e6c88a"))
 		draw_circle(c + Vector2(-r * 0.2, -r * 0.2), r * 0.18, Color("f4f0e0"))
-
-
-func _draw_wisp() -> void:
-	draw_circle(Vector2.ZERO, 26.0, Color(0.4, 1.0, 0.8, 0.07))
-	draw_circle(Vector2.ZERO, 16.0, Color(0.5, 1.0, 0.85, 0.15))
-	draw_circle(Vector2.ZERO, 9.0, Color(0.6, 1.0, 0.9, 0.4))
-	draw_circle(Vector2.ZERO, 5.0, Color("b8fff0"))
-	draw_circle(Vector2.ZERO, 2.5, Color.WHITE)

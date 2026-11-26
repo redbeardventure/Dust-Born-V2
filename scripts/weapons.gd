@@ -8,17 +8,22 @@ const TILE := 32.0
 
 ## key -> stats. speed px/s, damage hp, cooldown s between shots, range px, spread = max aim error (radians),
 ## mag = shots before a reload is needed, reload = seconds to refill the mag.
-## Ranges: revolver 4 tiles, shotgun 3 tiles, rifle 5 tiles.
+## Ranges: revolver 6 tiles, shotgun 4.5 tiles, rifle and flintlock 8 tiles.
 const RANGED := {
-	"pistol": {"label": "Pistol", "shot": "bullet", "speed": 900.0, "damage": 14, "cooldown": 0.7, "range": 4 * TILE, "spread": 0.05, "mag": 6, "reload": 1.8},
-	"rifle": {"label": "Rifle", "shot": "bullet", "speed": 1300.0, "damage": 34, "cooldown": 2.0, "range": 5 * TILE, "spread": 0.01, "mag": 5, "reload": 2.5},
+	"pistol": {"label": "Pistol", "shot": "bullet", "speed": 900.0, "damage": 14, "cooldown": 0.7, "range": 6 * TILE, "spread": 0.05, "mag": 6, "reload": 1.8},
+	"rifle": {"label": "Rifle", "shot": "bullet", "speed": 1300.0, "damage": 34, "cooldown": 2.0, "range": 8 * TILE, "spread": 0.01, "mag": 5, "reload": 2.5},
+	# Flintlock: a single slow, hard-hitting shot, then a long reload.
+	"flintlock": {"label": "Flintlock Rifle", "shot": "bullet", "speed": 1200.0, "damage": 50, "cooldown": 1.0, "range": 8 * TILE, "spread": 0.015, "mag": 1, "reload": 6.0},
 	# Shotgun: each shot is a spread of `pellets` projectiles; damage is per pellet.
-	"shotgun": {"label": "Shotgun", "shot": "pellet", "speed": 850.0, "damage": 9, "pellets": 7, "cooldown": 1.3, "range": 3 * TILE, "spread": 0.22, "mag": 4, "reload": 2.8},
+	"shotgun": {"label": "Shotgun", "shot": "pellet", "speed": 850.0, "damage": 9, "pellets": 7, "cooldown": 1.3, "range": 4.5 * TILE, "spread": 0.22, "mag": 2, "reload": 2.8},
 }
 
 ## Image icons for GUI buttons (weapons not listed here use the drawn icon from draw_icon()).
 const ICON_IMAGES := {
 	"pistol": "res://assets/revolver_russian.svg",
+	"rifle": "res://assets/rifle_ferguson.svg",
+	"flintlock": "res://assets/Rifle_Flinklock_.png",  # upright image, drawn turned to point right (see ICON_TURNED)
+	"shotgun": "res://assets/shotgun_sidebyside.svg",
 }
 
 
@@ -30,6 +35,7 @@ const HELD_IMAGES := {
 	"pistol": {"path": "res://assets/Hand_Revolver_Russian.png", "grip": Vector2(30, 39), "scale": 0.65, "reach": 11.0, "side": 6.0},
 	# Long guns (64x128 images): hand on the rear grip at the bottom, barrel tip at y = 0.
 	"rifle": {"path": "res://assets/Hand_Rifle_.png", "grip": Vector2(32, 60), "scale": 0.55, "reach": 6.0, "side": 5.0},
+	"flintlock": {"path": "res://assets/Rifle_Flinklock_.png", "grip": Vector2(32, 60), "scale": 0.55, "reach": 6.0, "side": 5.0},
 	"shotgun": {"path": "res://assets/Hand_Shotgun_.png", "grip": Vector2(30, 57), "scale": 0.55, "reach": 6.0, "side": 5.0},
 }
 
@@ -48,7 +54,7 @@ static func _held_texture(path: String) -> Texture2D:
 ## Draws the in-hand image for `key` if there is one; returns false when the caller should use line art.
 ## `body_scale` scales the image and its position about the body centre (used for the walking step pulse).
 ## Leaves the canvas draw transform reset to identity.
-static func draw_held_image(ci: CanvasItem, key: String, facing: Vector2, base: Vector2, body_scale: float = 1.0) -> bool:
+static func draw_held_image(ci: CanvasItem, key: String, facing: Vector2, base: Vector2, body_scale: float = 1.0, kick: float = 0.0) -> bool:
 	if not HELD_IMAGES.has(key):
 		return false
 	var h: Dictionary = HELD_IMAGES[key]
@@ -61,6 +67,7 @@ static func draw_held_image(ci: CanvasItem, key: String, facing: Vector2, base: 
 	var grip_at := facing * float(h.get("reach", 0.0)) + right * float(h.get("side", 0.0))
 	if not h.has("reach"):
 		grip_at = base
+	grip_at -= facing * kick  # recoil: the gun jerks back toward the shooter
 	s *= body_scale
 	grip_at *= body_scale
 	ci.draw_set_transform(grip_at, facing.angle() + PI * 0.5, Vector2(s, s))  # image "up" -> facing
@@ -81,6 +88,20 @@ static func muzzle_offset(key: String, facing: Vector2) -> Vector2:
 	return facing * reach + right * float(h["side"])
 
 
+## Seconds between the flintlock's priming flash and the shot leaving the muzzle.
+const FLINTLOCK_DELAY := 0.3
+
+
+## Where the flintlock's lock (flash pan) sits relative to the body centre: beside the stock, just
+## ahead of the hand, on the gun's right side.
+static func lock_offset(key: String, facing: Vector2) -> Vector2:
+	if not HELD_IMAGES.has(key) or not HELD_IMAGES[key].has("reach"):
+		return Vector2.ZERO
+	var h: Dictionary = HELD_IMAGES[key]
+	var right := Vector2(-facing.y, facing.x)
+	return facing * (float(h["reach"]) + 5.0) + right * (float(h["side"]) + 2.0)
+
+
 ## Image icon for `key`, or null when it has none (or the file is missing).
 static func icon_texture(key: String) -> Texture2D:
 	var path: String = ICON_IMAGES.get(key, "")
@@ -90,14 +111,14 @@ static func icon_texture(key: String) -> Texture2D:
 
 
 ## Choices offered to the player, in button order.
-const PLAYER_CHOICES := ["pistol", "shotgun", "rifle"]  # no melee for now
+const PLAYER_CHOICES := ["pistol", "shotgun", "rifle", "flintlock"]  # no melee for now
 
 
 ## How far off (pixels, either side) a bullet can land at the end of the weapon's range;
 ## close up it is only a couple of pixels. Rifles are steadier than pistols.
 const MISS_PX_AT_RANGE := 24.0
 const MISS_PX_CLOSE := 2.0
-const STEADINESS := {"pistol": 1.0, "rifle": 0.6}
+const STEADINESS := {"pistol": 1.0, "rifle": 0.6, "flintlock": 0.6}
 
 
 ## Multiplier for the weapon's spread when shooting at something `dist` px away: the farther
@@ -149,6 +170,14 @@ static func tooltip(key: String) -> String:
 		w["label"], dmg, roundi(float(w["range"]) / TILE), float(w["cooldown"]), w["mag"], float(w["reload"])]
 
 
+## Damage one trigger pull can do: x = a single hit (one pellet), y = every pellet hitting.
+static func damage_range(key: String) -> Vector2i:
+	if not RANGED.has(key):
+		return Vector2i.ZERO
+	var w: Dictionary = RANGED[key]
+	return Vector2i(int(w["damage"]), int(w["damage"]) * int(w.get("pellets", 1)))
+
+
 static func mag_size(key: String) -> int:
 	return int(RANGED[key]["mag"]) if RANGED.has(key) else 0
 
@@ -159,7 +188,7 @@ static func length(key: String) -> float:
 			return 8.0
 		"spear":
 			return 22.0
-		"rifle", "shotgun":
+		"rifle", "shotgun", "flintlock":
 			return 16.0
 	return 12.0
 
@@ -170,7 +199,7 @@ static func draw_held(ci: CanvasItem, key: String, facing: Vector2, base: Vector
 		return
 	var tip := base + facing * length(key) * s
 	match key:
-		"pistol", "rifle":
+		"pistol", "rifle", "flintlock":
 			ci.draw_line(base, tip, Color("2a2a2e"), 3.0 * s)
 			ci.draw_line(base, base + facing * 5.0 * s, Color("6b4a2a"), 3.5 * s)  # grip / stock
 		"shotgun":  # two side-by-side barrels on a wooden stock
@@ -183,12 +212,23 @@ static func draw_held(ci: CanvasItem, key: String, facing: Vector2, base: Vector
 			ci.draw_line(base, tip, Color("d0d4d8"), 2.5 * s)
 
 
+## Icon images that are drawn upright (barrel up) and must be turned to point right.
+const ICON_TURNED := ["flintlock"]
+
+
 ## Draws a weapon icon (image if it has one, else the line art) centred on `center` in a `box` px square.
-static func draw_icon_at(ci: CanvasItem, key: String, center: Vector2, box: float) -> void:
+## `angle` turns the whole picture about `center` (radians).
+static func draw_icon_at(ci: CanvasItem, key: String, center: Vector2, box: float, angle: float = 0.0) -> void:
 	var tex := icon_texture(key)
 	if tex != null:
 		var ts := tex.get_size()
 		var k := box / maxf(ts.x, ts.y)
+		var turn := PI * 0.5 if ICON_TURNED.has(key) else 0.0
+		if turn != 0.0 or angle != 0.0:
+			ci.draw_set_transform(center, turn + angle, Vector2(k, k))
+			ci.draw_texture(tex, -ts * 0.5)
+			ci.draw_set_transform_matrix(Transform2D.IDENTITY)
+			return
 		ci.draw_texture_rect(tex, Rect2(center - ts * k * 0.5, ts * k), false)
 		return
 	ci.draw_set_transform(center - Vector2(box, box) * 0.5)
