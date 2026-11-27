@@ -74,9 +74,9 @@ func make_interactive(loot_kind: String, is_locked: bool = false) -> void:
 	hp = max_hp()
 
 
-## Crates and trunks are opened by hand (E / Open button).
+## Crates, trunks and barrels are opened by hand (E / Open button).
 func is_openable() -> bool:
-	return kind == "crate" or kind == "trunk"
+	return kind == "crate" or kind == "trunk" or kind == "barrel"
 
 
 ## Barrels break quicker than the sturdier crates.
@@ -187,7 +187,7 @@ func _break_apart() -> void:
 	var scene := get_tree().current_scene
 	PropBurst.spawn(scene, global_position, scale.x)
 	var p := get_tree().get_first_node_in_group("player")
-	if loot == "water":
+	if loot == "water" or water_inside:
 		WaterPuddle.spawn(get_parent(), position, scale.x)  # spills and pools where the barrel stood
 	elif Weapons.is_ranged(loot) and p != null and p.has_method("collect_loot"):
 		# A gun found inside goes straight onto the weapon wheel, like opening a crate.
@@ -253,6 +253,8 @@ func _draw() -> void:
 			_draw_coal_car(rng)
 		"smoke":
 			_draw_smoke(rng)
+		"wisp_smoke":
+			_draw_wisp_smoke(rng)
 		"cactus":
 			_draw_cactus(rng)
 		"palm":
@@ -350,6 +352,13 @@ func _draw_barrel() -> void:
 	draw_arc(Vector2.ZERO, 12.5, 0.0, TAU, 24, Color("2d2d2d"), 1.5)
 	draw_arc(Vector2.ZERO, 7.0, 0.0, TAU, 20, Color(0.2, 0.12, 0.05, 0.8), 1.5)
 	draw_line(Vector2(-10, 0), Vector2(10, 0), Color(0.25, 0.15, 0.07, 0.6), 1.0)
+	if opened:
+		# Lid off: dark empty inside (or full of water).
+		draw_circle(Vector2.ZERO, 10.0, Color("2a1a0c"))
+		if water_inside:
+			draw_circle(Vector2.ZERO, 8.5, Color(0.2, 0.5, 0.68, 0.95))
+			draw_arc(Vector2(-2, -1), 3.5, 0.2, 2.6, 8, Color(1, 1, 1, 0.5), 1.0)
+		draw_arc(Vector2.ZERO, 10.0, 0.0, TAU, 20, Color("1a1008"), 1.5)
 	if hp > 0 and hp < max_hp():  # splintered once hit
 		var dmg := 1.0 - float(hp) / BARREL_HP
 		for i in int(ceil(dmg * 4.0)):
@@ -510,6 +519,64 @@ func _draw_smoke(rng: RandomNumberGenerator) -> void:
 		var g := rng.randf_range(0.34, 0.56)
 		draw_colored_polygon(_blob(cr, 12, 0.14, rng, c), Color(g * 0.7, g * 0.7, g * 0.74, 0.9))
 		draw_colored_polygon(_blob(cr * 0.75, 12, 0.14, rng, c + _u(Vector2(-cr * 0.12, -cr * 0.15))), Color(g, g, g * 1.04, 0.9))
+
+
+## Thin, translucent smoke: a few tapering ribbons that sway in S-curves and slowly drift.
+## Each ribbon is drawn as three stacked layers (wide and faint to narrow and brighter) with a
+## fine rim line, which gives the soft, see-through edges of curling smoke.
+func _draw_wisp_smoke(rng: RandomNumberGenerator) -> void:
+	var half := 100.0
+	var steps := 28
+	for i in 5:
+		# Random look per ribbon (always drawn, so the seeded layout is stable).
+		var y_off := rng.randf_range(-34.0, 34.0)
+		var amp := rng.randf_range(14.0, 30.0)
+		var freq := rng.randf_range(0.7, 1.4)
+		var phase := rng.randf() * TAU
+		var tilt := rng.randf_range(-0.4, 0.4)
+		var width := rng.randf_range(5.0, 11.0)
+		var alpha := rng.randf_range(0.12, 0.2)
+		var tone := rng.randf_range(0.86, 0.97)
+		var speed := rng.randf_range(0.25, 0.5) * (1.0 if i % 2 == 0 else -1.0)
+		var t := _smoke_t * speed
+
+		var centres := PackedVector2Array()
+		var widths := PackedFloat32Array()
+		for k in steps + 1:
+			var u := float(k) / float(steps)
+			var y := y_off + amp * sin(u * TAU * freq + phase + t) + amp * 0.4 * sin(u * TAU * 2.3 - t * 1.4 + phase * 2.0)
+			centres.append(Vector2(lerpf(-half, half, u), y).rotated(tilt))
+			var taper := pow(sin(PI * u), 0.9)
+			widths.append(maxf(width * taper * (1.0 + 0.25 * sin(_smoke_t * 0.6 + phase + u * 5.0)), 0.4))
+
+		for layer in 3:
+			var wk: float = [1.0, 0.6, 0.28][layer]
+			var ak: float = [0.55, 0.8, 1.0][layer]
+			var top := PackedVector2Array()
+			var bottom := PackedVector2Array()
+			var cols := PackedColorArray()
+			for k in steps + 1:
+				var prev := centres[maxi(k - 1, 0)]
+				var next := centres[mini(k + 1, steps)]
+				var normal := (next - prev).normalized().orthogonal()
+				var w: float = widths[k] * wk
+				top.append(centres[k] + normal * w)
+				bottom.append(centres[k] - normal * w)
+				var fade := sin(PI * float(k) / float(steps))  # both ends fade to nothing
+				cols.append(Color(tone, tone, tone + 0.03, alpha * ak * fade))
+			if layer == 0:  # fine bright rim along both edges
+				var rim := PackedColorArray()
+				for c in cols:
+					rim.append(Color(1.0, 1.0, 1.0, c.a * 0.9))
+				draw_polyline_colors(top, rim, 1.2, true)
+				draw_polyline_colors(bottom, rim, 1.2, true)
+			# Closed outline: down one edge, back along the other (colours mirror the fade).
+			var outline := top.duplicate()
+			var outline_cols := cols.duplicate()
+			for k in range(steps, -1, -1):
+				outline.append(bottom[k])
+				outline_cols.append(cols[k])
+			draw_polygon(outline, outline_cols)
 
 
 # ---------------------------------------------------------------- desert theme
@@ -696,7 +763,7 @@ func _process(delta: float) -> void:
 		_tick_pickup(delta)
 	if kind == "campfire" or kind == "fireplace":
 		queue_redraw()
-	if kind == "smoke":
+	if kind == "smoke" or kind == "wisp_smoke":
 		_smoke_t += delta
 		queue_redraw()
 	if _hit_flash > 0.0:  # barrel hit flash fading out

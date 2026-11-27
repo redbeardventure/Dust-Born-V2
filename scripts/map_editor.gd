@@ -1866,7 +1866,7 @@ func _update_prop_loot_row() -> void:
 	elif not prop_keys.is_empty():
 		key = _prop_key()
 	var is_weapon := key == MapData.WEAPON_PROP
-	var is_smoke := key == "smoke"
+	var is_smoke := MapData.SMOKE_PROPS.has(key)
 	prop_loot_panel.visible = prop_bar.visible and (MapData.LOOT_PROPS.has(key) or is_weapon or is_smoke)
 	prop_loot_opt.get_parent().visible = MapData.LOOT_PROPS.has(key)  # the weapon prop has its own dropdown
 	prop_weapon_opt.get_parent().visible = is_weapon
@@ -2507,7 +2507,7 @@ func _place_prop(p: Vector2) -> void:
 		loot = Weapons.PLAYER_CHOICES[maxi(prop_weapon_opt.selected, 0)]
 	var lock_it := prop_lock_check.button_pressed and (_prop_key() == "crate" or _prop_key() == "trunk")
 	var new_pr := MapData.new_prop(_prop_key(), p, sc, rot, -1, loot, lock_it)
-	if _prop_key() == "smoke":
+	if MapData.SMOKE_PROPS.has(_prop_key()):
 		new_pr["opacity"] = opacity_slider.value
 	if _tool_prop_emits_light():  # use the light controls' values for this prop
 		new_pr["light"] = {"radius": radius_slider.value, "color": light_color.color, "energy": energy_slider.value, "flicker": flicker_check.button_pressed, "npc_shadow": npc_shadow_check.button_pressed}

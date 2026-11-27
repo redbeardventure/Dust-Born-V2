@@ -783,8 +783,9 @@ func rebuild_props() -> void:
 				node.make_pickup()
 		if def.get("fade", false):
 			# Canopies and smoke draw above the player and fade when covering them.
-			node.z_index = SMOKE_Z if pr["type"] == "smoke" else 10  # smoke covers everything, roofs and markers included
-			if pr["type"] == "smoke":
+			var is_smoke: bool = MapData.SMOKE_PROPS.has(pr["type"])
+			node.z_index = SMOKE_Z if is_smoke else 10  # smoke covers everything, roofs and markers included
+			if is_smoke:
 				# Like the roofs: point lights don't touch it, the ambient colour still tints it.
 				var sm := CanvasItemMaterial.new()
 				sm.light_mode = CanvasItemMaterial.LIGHT_MODE_UNSHADED

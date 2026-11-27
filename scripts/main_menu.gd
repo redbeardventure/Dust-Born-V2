@@ -10,6 +10,7 @@ var maps_panel: Control
 
 
 func _ready() -> void:
+	MapData.install_bundled_maps()
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var bg := ColorRect.new()
 	bg.color = Color("1b2012")

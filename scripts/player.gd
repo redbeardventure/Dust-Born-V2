@@ -145,6 +145,8 @@ var target: Node2D = null
 var _reticle: Node2D
 ## Set while the on-screen Shoot button is held: fires at the target like holding Space / F.
 var fire_held := false
+## Push of the on-screen joystick (length 0..1), set by game_view. Walks like the arrow keys.
+var joystick := Vector2.ZERO
 ## Selected door or window (click it). The player walks up to it; E / K then act on it.
 var interact: Node2D = null
 var _interact_marker: Node2D
@@ -194,6 +196,14 @@ func _ready() -> void:
 
 	var cam := Camera2D.new()
 	_setup_revolver()
+	# The revolver is a sprite child, which draws over this node's own _draw(). The hat gets its own
+	# child added after it, so the hat always sits on top of the weapon.
+	_hat_layer = Node2D.new()
+	_hat_layer.draw.connect(func() -> void:
+		var bs := step_scale()
+		HeadArt.draw(_hat_layer, head_style, Vector2.ZERO, facing.angle(), bs)
+		_hat_layer.draw_set_transform_matrix(Transform2D.IDENTITY))
+	add_child(_hat_layer)
 	_cam = cam
 	cam.zoom = Vector2(NORMAL_ZOOM, NORMAL_ZOOM)
 	cam.position_smoothing_enabled = true
@@ -246,7 +256,36 @@ func _ready() -> void:
 	_build_grid()
 
 
+## Quickly moves the player to `dest` (used to step through a door that was just kicked in),
+## ignoring input and the combat movement allowance.
+func slide_to(dest: Vector2, time := 0.45) -> void:
+	_clear_path()
+	_slide_dest = dest
+	_slide_speed = maxf(position.distance_to(dest) / time, 1.0)
+	_sliding = true
+	velocity = Vector2.ZERO
+
+
+var _sliding := false
+var _slide_dest := Vector2.ZERO
+var _slide_speed := 0.0
+
+
 func _physics_process(delta: float) -> void:
+	if _sliding:
+		_cooldown = maxf(_cooldown - delta, 0.0)
+		_tick_reload(delta)  # a reload keeps running while stepping through a door
+		var to := _slide_dest - position
+		if to.length() <= _slide_speed * delta:
+			position = _slide_dest
+			_sliding = false
+		else:
+			position += to.normalized() * _slide_speed * delta
+			facing = to.normalized()
+		_step_phase = fmod(_step_phase + _slide_speed * delta / STEP_LENGTH * PI, TAU)
+		_step_amount = 1.0
+		queue_redraw()
+		return
 	_cooldown = maxf(_cooldown - delta, 0.0)
 	_tick_reload(delta)
 	_tick_rifle_eject(delta)
@@ -259,6 +298,9 @@ func _physics_process(delta: float) -> void:
 		queue_redraw()
 	if weapon_drawn and not turn_mode and not is_instance_valid(target) and _since_shot > HOLSTER_AFTER:
 		holster()  # drawn by firing at nothing: put it away after a quiet spell
+	# Out of ammo: reload by itself, except in a fight (there it costs the turn's action).
+	if not turn_mode and Weapons.is_ranged(weapon) and ammo() <= 0 and not is_reloading():
+		reload()
 	if auto_reload and not turn_mode and _since_shot >= AUTO_RELOAD_DELAY and Weapons.is_ranged(weapon) and not is_reloading() and ammo() < Weapons.mag_size(weapon):
 		reload()
 	if _hurt_flash > 0.0:
@@ -273,7 +315,7 @@ func _physics_process(delta: float) -> void:
 	if Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and get_viewport().gui_get_hovered_control() == null:
 		shoot_at(get_global_mouse_position())
 	# Holding Space or F fires at the locked target, or straight ahead without one.
-	elif Input.is_key_pressed(KEY_SPACE) or Input.is_key_pressed(KEY_F) or (fire_held and is_instance_valid(target)):
+	elif Input.is_key_pressed(KEY_SPACE) or Input.is_key_pressed(KEY_F) or fire_held:
 		if is_instance_valid(target):
 			shoot_at(target.global_position)
 		else:
@@ -281,7 +323,11 @@ func _physics_process(delta: float) -> void:
 	var dir := Vector2(
 		float(Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT)) - float(Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT)),
 		float(Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN)) - float(Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP)))
-	var speed := SPEED * (1.7 if Input.is_key_pressed(KEY_SHIFT) or _combat_run else 1.0)
+	var stick_push := 1.0
+	if dir == Vector2.ZERO and joystick != Vector2.ZERO and not turn_mode:
+		dir = joystick  # on-screen joystick (only when no key is held)
+		stick_push = minf(joystick.length(), 1.0)  # a light push walks slower
+	var speed := SPEED * (1.7 if Input.is_key_pressed(KEY_SHIFT) or _combat_run else 1.0) * stick_push
 	if turn_mode:
 		# Turn-based: no free walking. The only way to move is running to a highlighted spot.
 		dir = Vector2.ZERO
@@ -515,6 +561,20 @@ func _unhandled_input(event: InputEvent) -> void:
 				get_viewport().set_input_as_handled()
 				return
 		var npc := _npc_at(mp)
+		if event.double_click and Weapons.is_ranged(weapon):
+			# Double-click with a gun: shoot at the NPC / barrel / crate clicked, else at the spot.
+			var mark: Node2D = npc if npc != null else _container_at(mp)
+			var aim_at := mp
+			if mark != null:
+				if mark != target:
+					set_target(mark)
+				aim_at = mark.global_position
+			_hold_move = false
+			if not turn_mode:
+				_clear_path()  # stop walking so the shot is not cancelled by the first click's move
+			shoot_at(aim_at)
+			get_viewport().set_input_as_handled()
+			return
 		if event.double_click and weapon == "none":
 			# Punch selected: double-clicking a target walks right up to it.
 			var victim: Node2D = npc if npc != null else _container_at(mp)
@@ -551,10 +611,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			else:
 				set_interact(opening)
 		elif not turn_mode:
-			set_interact(null)
-			_move_to(mp)
-			_hold_move = true  # keep following the cursor while the button stays down
-			_hold_timer = 0.0
+			set_interact(null)  # clicking empty ground only clears the door / window selection (no click-to-move)
 		get_viewport().set_input_as_handled()
 	elif event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
@@ -712,7 +769,34 @@ func gun_pull_for(dir: Vector2) -> float:
 		if along <= 0.0 or absf(to.cross(dir)) > r + 4.0:
 			continue  # behind the shooter, or not in line with the barrel
 		pull = maxf(pull, reach - (along - minf(r, Projectile.HIT_RADIUS - 2.0)))
+	pull = maxf(pull, _gun_pull_for_blockers(off, barrel_side, reach))
 	return clampf(pull, 0.0, reach - 4.0)
+
+
+const GUN_WALL_MARGIN := 3.0  # px the gun's tip stays clear of a wall or blocking prop
+
+
+## How far the gun must come back so it doesn't poke into a wall or a prop that blocks walking
+## (solid props, low cover like crates and barrels). Looks along the line from the body to the
+## muzzle, and along the barrel itself, since the gun is held to one side of the body.
+func _gun_pull_for_blockers(off: Vector2, barrel_side: Vector2, reach: float) -> float:
+	var space := get_world_2d().direct_space_state
+	var mask := Projectile.WORLD_MASK | Projectile.LOW_MASK
+	var tip := global_position + off
+	var best := 0.0
+	# [from, fraction of the segment that is gun] for the two lines.
+	for from in [global_position, global_position + barrel_side]:
+		var seg: Vector2 = tip - from
+		if seg.length() < 1.0:
+			continue
+		var q := PhysicsRayQueryParameters2D.create(from, tip, mask, [get_rid()])
+		var hit := space.intersect_ray(q)
+		if hit.is_empty():
+			continue
+		# Fraction of the way to the tip where it hits; the gun has to give back the rest.
+		var f: float = from.distance_to(hit["position"]) / seg.length()
+		best = maxf(best, reach * (1.0 - f) + GUN_WALL_MARGIN)
+	return best
 
 
 ## The gun's muzzle (world position) when aiming along `dir`, drawn back for close targets.
@@ -749,7 +833,8 @@ func shoot_at(target: Vector2) -> void:
 		draw_weapon()  # first pull it out; the shot comes after DRAW_TIME
 		return
 	if ammo() <= 0:
-		reload()
+		if not turn_mode:
+			reload()  # in a fight reloading costs the turn's action, so it is never automatic
 		return
 	if turn_mode:
 		_spend_action()
@@ -1094,20 +1179,41 @@ func holster() -> void:
 	queue_redraw()
 
 
-const NORMAL_ZOOM := 1.1
-const COMBAT_ZOOM := 1.4  # camera zoom while a turn-based fight is on
+const NORMAL_ZOOM := 2.0
+const COMBAT_ZOOM := 2.2  # camera zoom while a turn-based fight is on (the MAX_ZOOM limit)
+const MIN_ZOOM := 0.9  # furthest out a pinch can go
+const MAX_ZOOM := 2.2  # closest in a pinch can go (the zoom limit)
 var _cam: Camera2D
 var _zoom_tween: Tween
+var _zoom_base := NORMAL_ZOOM  # zoom the current mode asks for (normal or combat)
+var _zoom_mul := 1.0  # the player's pinch adjustment on top of it
 
 
-## Smoothly zooms the camera (used when combat starts and ends).
+func _target_zoom() -> float:
+	return clampf(_zoom_base * _zoom_mul, MIN_ZOOM, MAX_ZOOM)
+
+
+## Smoothly zooms the camera (used when combat starts and ends). Keeps the pinch adjustment.
 func _zoom_camera(z: float) -> void:
 	if _cam == null:
 		return
+	_zoom_base = z
 	if _zoom_tween != null and _zoom_tween.is_valid():
 		_zoom_tween.kill()
+	var t := _target_zoom()
 	_zoom_tween = create_tween()
-	_zoom_tween.tween_property(_cam, "zoom", Vector2(z, z), 0.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	_zoom_tween.tween_property(_cam, "zoom", Vector2(t, t), 0.5).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+
+
+## Pinch zoom: `factor` > 1 zooms in. The result is kept between MIN_ZOOM and MAX_ZOOM.
+func pinch_zoom(factor: float) -> void:
+	if _cam == null:
+		return
+	_zoom_mul = clampf(_zoom_mul * factor, MIN_ZOOM / _zoom_base, MAX_ZOOM / _zoom_base)
+	if _zoom_tween != null and _zoom_tween.is_valid():
+		_zoom_tween.kill()
+	var t := _target_zoom()
+	_cam.zoom = Vector2(t, t)
 
 
 func enter_combat() -> void:
@@ -1175,7 +1281,7 @@ func can_play_card(kind: String) -> bool:
 	return false
 
 
-## Extra actions left this turn (the ambush bonus after kicking a door in: 2 actions in round 1).
+## Extra actions left this turn (the ambush bonus after kicking a door in: 3 actions in round 1).
 var extra_actions := 0
 
 
@@ -1998,7 +2104,8 @@ func _draw() -> void:
 			Weapons.draw_held(self, weapon, facing, hold - facing * _gun_pull)
 	else:
 		_draw_holstered()
-	_draw_hat()
+	if _hat_layer == null:
+		_draw_hat()  # no separate layer: draw it here (still above the weapons drawn above)
 	if _hurt_flash > 0.0:
 		draw_circle(Vector2.ZERO, 11.0, Color(1, 0.1, 0.1, _hurt_flash * 2.0))
 	draw_set_transform_matrix(Transform2D.IDENTITY)
@@ -2084,6 +2191,11 @@ func _process(delta: float) -> void:
 	if _gun_pull != pull_before:
 		queue_redraw()
 	_sync_revolver(delta)
+	if _hat_layer != null:
+		_hat_layer.queue_redraw()  # follows facing, step pulse and the chosen hat
+
+
+var _hat_layer: Node2D
 
 
 ## Put-away gun: a revolver in a holster on the right hip, long guns slung across the back.

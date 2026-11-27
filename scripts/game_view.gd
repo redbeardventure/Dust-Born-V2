@@ -12,6 +12,15 @@ var target_label: Label
 var interact_label: Label
 var message_label: Label
 var shoot_btn: Button
+const STICK_MARGIN_X := 80.0   # joystick / Shoot button distance from the left / right screen edge
+const STICK_MARGIN_Y := 130.0  # ... and from the bottom edge
+const KICK_ENTER_DIST := 45.0  # px past the door the player lands after a kick
+const KICK_ROOM := 80.0  # Kick is only offered when this much space behind the door is clear
+const DOOR_BTN := 68.0  # diameter of the round Open / Kick / Close buttons
+var stick: TouchStick
+var _action_panel: PanelContainer  # Skip turn / End combat; only shown in combat
+var _minimap: Control
+var _top_col: VBoxContainer  # Start combat / Untarget, beside the weapon button
 var weapon_btn: Button
 var weapon_icon: Control
 var _wheel_layer: CanvasLayer
@@ -44,7 +53,7 @@ var card_row: Control
 var cards: Array = []  # ActionCard nodes
 var _last_card := ""  # kind of the card played this turn (for its USED stamp)
 var ammo_icons: Control
-const AMMO_SCALE := 2.0  # how much bigger the ammo graphic is drawn than its 22 px design
+const AMMO_SCALE := 3.0  # how much bigger the ammo graphic is drawn than its 22 px design
 const PROFILE_SIZE := 80.0  # profile picture button in the top-left corner
 const HUD_X := 12.0 + PROFILE_SIZE + 8.0  # health, ammo and info lines start right of the profile picture
 var door_buttons := {}  # "Open" / "Kick" / "Close" -> Button
@@ -60,6 +69,12 @@ func _process(delta: float) -> void:
 	_update_ammo()
 	_update_combat_status()
 	_update_combat_cards()
+	# An opened door drops its selection marker (its Close button still works when you stand next to it).
+	var sel := player.interact as OpeningNode
+	if sel != null and sel.kind == "door" and sel.is_open:
+		player.set_interact(null)
+	if stick != null:
+		player.joystick = stick.output
 	if fight_btn != null:
 		fight_btn.disabled = combat == null or combat.active
 	if end_combat_btn != null:
@@ -70,6 +85,8 @@ func _process(delta: float) -> void:
 				else "Can't leave while an enemy is attacking you"
 	if skip_btn != null:
 		skip_btn.visible = combat != null and combat.active
+		if _action_panel != null:
+			_action_panel.visible = skip_btn.visible  # no empty box outside combat
 		skip_btn.disabled = not (combat != null and combat.is_player_turn() and not player.is_running())
 	if untarget_btn != null:
 		untarget_btn.disabled = not (is_instance_valid(player.target) or is_instance_valid(player.interact))
@@ -80,16 +97,17 @@ func _process(delta: float) -> void:
 		var my_go := not player.turn_mode or (player.my_turn and player.action_left)
 		var fists := Player.weapon == "none"
 		var armed := fists or Weapons.is_ranged(Player.weapon)
-		var can_shoot := is_instance_valid(player.target) and armed and my_go
+		# A gun fires any time (at the target, else straight ahead); a punch needs a target.
+		var can_shoot := armed and my_go and (not fists or is_instance_valid(player.target))
 		if fists and can_shoot and player.turn_mode and not player.in_punch_reach(player.target):
 			can_shoot = false  # in combat a punch needs the target right next to you
 		var walled: bool = not fists and player.in_wall_cover()
 		if walled:
 			can_shoot = false  # hiding behind a wall: no line to shoot along
-		shoot_btn.text = "Punch" if fists else "Shoot"
 		shoot_btn.disabled = not can_shoot
 		var verb := "Punch" if fists else "Shoot at"
-		shoot_btn.tooltip_text = ("%s the target (hold to keep going)" % verb) if can_shoot else (
+		shoot_btn.tooltip_text = (("%s the target (hold to keep going)" % verb) if is_instance_valid(player.target) \
+				else "Fire straight ahead (hold to keep going)") if can_shoot else (
 				"Wait for your turn" if not my_go else
 				"Behind a wall: run to another spot to shoot" if walled else
 				"Target an NPC, barrel or crate first" if not is_instance_valid(player.target) else
@@ -111,7 +129,7 @@ func _process(delta: float) -> void:
 	if door == null:
 		door_prompt.text = ""
 	elif door.is_open:
-		door_prompt.text = "Open door nearby"
+		door_prompt.text = ""
 	else:
 		door_prompt.text = "Closed door nearby"
 	_update_door_buttons(door)
@@ -132,12 +150,29 @@ func _update_door_buttons(door: OpeningNode) -> void:
 	if door_buttons.is_empty():
 		return
 	var near_closed := door != null and not door.is_open
-	var near_open := door != null and door.is_open
-	var crate: PropNode = player.target as PropNode if is_instance_valid(player.target) else null
-	var crate_ready := crate != null and crate.is_openable() and not crate.opened and _crate_in_reach(crate)
+	var crate := _reachable_container()
+	var crate_ready := crate != null and not crate.opened
 	door_buttons["Open"].visible = near_closed or crate_ready
-	door_buttons["Kick"].visible = near_closed
-	door_buttons["Close"].visible = near_open
+	door_buttons["Kick"].visible = near_closed and door.kind == "door" and _can_enter(door)
+
+
+## The chest, crate or barrel the Open button acts on: the targeted one if the player is next to
+## it, otherwise the nearest unopened one within reach (null when none).
+func _reachable_container() -> PropNode:
+	var t: PropNode = player.target as PropNode if is_instance_valid(player.target) else null
+	if t != null and t.is_openable() and _crate_in_reach(t):
+		return t
+	var best: PropNode = null
+	var best_d := INF
+	for n in get_tree().get_nodes_in_group("containers"):
+		var pn := n as PropNode
+		if pn == null or not pn.is_openable() or pn.opened or not _crate_in_reach(pn):
+			continue
+		var d := player.global_position.distance_to(pn.global_position)
+		if d < best_d:
+			best_d = d
+			best = pn
+	return best
 
 
 ## Close enough to a crate to open it by hand.
@@ -200,7 +235,7 @@ func _update_ammo() -> void:
 		ammo_icons.queue_redraw()
 
 
-## Loaded rounds are bright, spent ones dark. While reloading, rounds fill in one by one with the progress.
+## Loaded rounds are bright, spent ones dark. While reloading, the missing rounds fill in one by one with the progress.
 func _draw_ammo_icons() -> void:
 	var w := Player.weapon
 	var mag := Weapons.mag_size(w)
@@ -208,7 +243,9 @@ func _draw_ammo_icons() -> void:
 		return
 	var loaded := player.ammo()
 	if player.is_reloading():
-		loaded = int(floor(player.reload_progress() * mag))
+		# Rounds still in the gun stay lit; only the missing slots fill in as the reload progresses.
+		var have := player.ammo()
+		loaded = have + int(floor(player.reload_progress() * float(mag - have)))
 	var c := ammo_icons
 	# Drawn on a small design grid, then scaled up and centred in the box above the Shoot button.
 	var content_w := 22.0 if w == "pistol" else float(mag) * 15.0 - 3.0 if w == "flintlock" else float(mag) * ((7.0 if w == "shotgun" else 5.0) + 3.0) - 3.0
@@ -263,12 +300,42 @@ func _draw_ammo_icons() -> void:
 	c.draw_set_transform_matrix(Transform2D.IDENTITY)
 
 
-## E opens/closes the nearest door, K kicks a closed one open.
+## Where the player lands after kicking `door` in: through the doorway to the far side.
+func _kick_dest(door: OpeningNode) -> Vector2:
+	var far_side := door.to_global(-door.to_local(player.global_position))
+	return door.approach_point(far_side, KICK_ENTER_DIST)
+
+
+## Spot `gap` px past the door's wall face, on the far side from the player.
+func _inside_point(door: OpeningNode, gap: float) -> Vector2:
+	return door.approach_point(door.to_global(-door.to_local(player.global_position)), gap)
+
+
+## True when there is room behind the door for the player to step in: the landing spot and the
+## space just inside the doorway are clear of walls, solid props and water.
+func _can_enter(door: OpeningNode) -> bool:
+	var space := player.get_world_2d().direct_space_state
+	var shape := CircleShape2D.new()
+	shape.radius = 11.0  # a little over the player's 10 px body
+	var q := PhysicsShapeQueryParameters2D.new()
+	q.shape = shape
+	q.collision_mask = player.collision_mask
+	q.exclude = [player.get_rid()]
+	# Sample the space behind the door: inside the doorway, the landing spot, and out to KICK_ROOM.
+	for gap in [20.0, KICK_ENTER_DIST, (KICK_ENTER_DIST + KICK_ROOM) * 0.5, KICK_ROOM]:
+		var p := _inside_point(door, gap)
+		q.transform = Transform2D(0.0, p)
+		if not space.intersect_shape(q, 1).is_empty() or player._in_water(p):
+			return false
+	return true
+
+
+## E opens/closes the nearest door, K kicks a closed one open (only when there is room to step in).
 ## `only` limits the action: "open" never closes, "close" never opens.
 func _use_door(kick: bool, only: String = "") -> void:
 	# Open (or E) on a targeted crate the player is standing next to opens it.
-	var crate: PropNode = player.target as PropNode if is_instance_valid(player.target) else null
-	if not kick and only != "close" and crate != null and crate.is_openable() and _crate_in_reach(crate):
+	var crate := _reachable_container()
+	if not kick and only != "close" and crate != null:
 		if crate.opened:
 			_flash_message("Already opened")
 			return
@@ -294,8 +361,13 @@ func _use_door(kick: bool, only: String = "") -> void:
 	else:
 		if only == "close":
 			return
+		if kick and door.kind == "door" and not _can_enter(door):
+			_flash_message("No room to burst in here")
+			return
 		door.open(player.position, kick)
-		if kick:
+		if kick and door.is_open:  # (windows don't open, so there is nothing to burst through)
+			# Burst in: step through the doorway to the far side at the same time.
+			player.slide_to(_kick_dest(door))
 			_ambush_from_kick(door)
 	var reach := door.width + 24.0
 	player.refresh_nav(Rect2(door.position - Vector2(reach, reach), Vector2(reach, reach) * 2.0))
@@ -353,10 +425,23 @@ func _ready() -> void:
 	_build_combat_panel(layer)
 	_build_combat_cards(layer)
 	_build_hat_picker(layer)
-	layer.add_child(Minimap.create(data))  # overview map, top-right
+	_minimap = Minimap.create(data)  # overview map, top-right
+	layer.add_child(_minimap)
 	_build_weapon_bar(layer)
 	_build_action_bar(layer)
 	_build_health_bar(layer)
+	_build_joystick(layer)
+
+
+## On-screen joystick at the bottom left; its push drives player.joystick (same as the arrow keys).
+func _build_joystick(layer: CanvasLayer) -> void:
+	stick = TouchStick.new()
+	stick.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	stick.offset_left = STICK_MARGIN_X
+	stick.offset_bottom = -STICK_MARGIN_Y
+	stick.offset_top = -STICK_MARGIN_Y - stick.custom_minimum_size.y
+	stick.offset_right = STICK_MARGIN_X + stick.custom_minimum_size.x
+	layer.add_child(stick)
 
 
 ## Weapon HUD: one button at the bottom right showing the equipped weapon (fists at the start).
@@ -364,11 +449,18 @@ func _ready() -> void:
 func _build_weapon_bar(layer: CanvasLayer) -> void:
 	var panel := PanelContainer.new()
 	layer.add_child(panel)
+	# Weapon button, with Start combat / Untarget stacked beside it (they are added in _build_action_bar).
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	panel.add_child(row)
+	_top_col = VBoxContainer.new()
+	_top_col.add_theme_constant_override("separation", 4)
 	weapon_btn = Button.new()
 	weapon_btn.focus_mode = Control.FOCUS_NONE  # keep keys for walking / shooting
 	weapon_btn.custom_minimum_size = Vector2(96, 96)
 	weapon_btn.pressed.connect(_open_weapon_wheel)
-	panel.add_child(weapon_btn)
+	row.add_child(weapon_btn)
+	row.add_child(_top_col)
 	weapon_icon = Control.new()
 	weapon_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	weapon_icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -377,15 +469,16 @@ func _build_weapon_bar(layer: CanvasLayer) -> void:
 		var f := ThemeDB.fallback_font
 		weapon_icon.draw_string(f, Vector2(0, weapon_icon.size.y - 6), Weapons.label(Player.weapon), HORIZONTAL_ALIGNMENT_CENTER, weapon_icon.size.x, 13, Color(1, 1, 1, 0.9)))
 	weapon_btn.add_child(weapon_icon)
-	# Bottom-right, so it stays clear of the hat picker in the top-right corner.
+	# Top-right, just left of the minimap.
 	panel.anchor_left = 1.0
 	panel.anchor_right = 1.0
-	panel.anchor_top = 1.0
-	panel.anchor_bottom = 1.0
+	panel.anchor_top = 0.0
+	panel.anchor_bottom = 0.0
 	panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	panel.offset_right = -8
-	panel.offset_bottom = -40
+	panel.grow_vertical = Control.GROW_DIRECTION_END
+	var map_left := _minimap.offset_left if _minimap != null and _minimap.offset_left < 0.0 else -222.0
+	panel.offset_right = map_left - 8.0
+	panel.offset_top = 12
 
 
 ## A kicked-in door surprises the hostile NPCs inside the building it belongs to (the roof the
@@ -723,15 +816,31 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 4)
 	panel.add_child(col)
-	var defs := [["Open", false, "open"], ["Kick", true, ""], ["Close", false, "close"]]
+	_action_panel = panel
+	# Open / Kick / Close: round buttons fanned out to the left of the Shoot circle.
+	# [label, kick?, only, angle in degrees (0 = right, 90 = down)]
+	var defs := [["Open", false, "open", 210.0], ["Kick", true, "", 165.0]]
+	var shoot_c := Vector2(-(STICK_MARGIN_X + 80.0), -(STICK_MARGIN_Y + 80.0))  # Shoot circle centre, from the bottom-right corner
 	for d in defs:
 		var b := Button.new()
 		b.text = d[0]
 		b.focus_mode = Control.FOCUS_NONE  # keep keys for walking / shooting
-		b.custom_minimum_size = Vector2(90, 56)
+		b.add_theme_font_size_override("font_size", 15)
+		for st in ["normal", "hover", "pressed", "disabled"]:
+			var fill := Color(0.18, 0.14, 0.08, 0.7) if st != "pressed" else Color(0.5, 0.38, 0.15, 0.85)
+			b.add_theme_stylebox_override(st, _round_style(fill, DOOR_BTN / 2.0, Color(0.9, 0.78, 0.4, 0.85)))
 		b.pressed.connect(_use_door.bind(d[1], d[2]))
 		b.visible = false  # shown by _update_door_buttons() when a matching door is near
-		col.add_child(b)
+		layer.add_child(b)
+		var centre: Vector2 = shoot_c + Vector2.from_angle(deg_to_rad(float(d[3]))) * (70.0 + DOOR_BTN * 0.5 + 8.0)
+		b.anchor_left = 1.0
+		b.anchor_right = 1.0
+		b.anchor_top = 1.0
+		b.anchor_bottom = 1.0
+		b.offset_left = centre.x - DOOR_BTN * 0.5
+		b.offset_right = centre.x + DOOR_BTN * 0.5
+		b.offset_top = centre.y - DOOR_BTN * 0.5
+		b.offset_bottom = centre.y + DOOR_BTN * 0.5
 		door_buttons[d[0]] = b
 	# Shoot: fires at the current target; holding it keeps firing at the weapon's rate.
 	# Disabled (in _process) while there is no target or no gun selected.
@@ -743,21 +852,60 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 	ammo_icons.gui_input.connect(func(event: InputEvent) -> void:
 		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 			player.reload())
-	ammo_icons.custom_minimum_size = Vector2(90, 22.0 * AMMO_SCALE + 6.0)
+	# Ammo sits just above the round Shoot button (bottom right, mirroring the joystick).
+	var ammo_h := 22.0 * AMMO_SCALE + 6.0
 	ammo_icons.visible = false
 	ammo_icons.draw.connect(_draw_ammo_icons)
-	col.add_child(ammo_icons)
+	layer.add_child(ammo_icons)
+	ammo_icons.anchor_left = 1.0
+	ammo_icons.anchor_right = 1.0
+	ammo_icons.anchor_top = 1.0
+	ammo_icons.anchor_bottom = 1.0
+	ammo_icons.offset_left = -(STICK_MARGIN_X + 120.0)  # 30 px right of the Shoot circle's centre line
+	ammo_icons.offset_right = -(STICK_MARGIN_X - 20.0)
+	ammo_icons.offset_bottom = -(STICK_MARGIN_Y + 150.0 + 4.0)
+	ammo_icons.offset_top = ammo_icons.offset_bottom - ammo_h
 	shoot_btn = Button.new()
-	shoot_btn.text = "Shoot"
 	shoot_btn.focus_mode = Control.FOCUS_NONE
-	shoot_btn.custom_minimum_size = Vector2(90, 56)
+	shoot_btn.custom_minimum_size = Vector2(140, 140)  # same size as the joystick ring
+	# Target / crosshair icon instead of text.
+	var target_icon := Control.new()
+	target_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	target_icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	target_icon.draw.connect(func() -> void:
+		var c := target_icon.size * 0.5
+		var tint := Color(0.7, 0.45, 0.4, 0.6) if shoot_btn.disabled else Color(1.0, 0.55, 0.45)
+		target_icon.draw_arc(c, 24.0, 0.0, TAU, 48, tint, 3.0, true)
+		target_icon.draw_arc(c, 11.0, 0.0, TAU, 32, tint, 2.5, true)
+		target_icon.draw_circle(c, 3.0, tint)
+		for dir in [Vector2.UP, Vector2.DOWN, Vector2.LEFT, Vector2.RIGHT]:  # ticks crossing the outer ring
+			target_icon.draw_line(c + dir * 19.0, c + dir * 32.0, tint, 3.0))
+	shoot_btn.add_child(target_icon)
+	shoot_btn.draw.connect(target_icon.queue_redraw)  # follows the enabled / disabled look
+	shoot_btn.add_theme_font_size_override("font_size", 24)
 	shoot_btn.add_theme_color_override("font_color", Color(1.0, 0.55, 0.45))
+	shoot_btn.add_theme_color_override("font_disabled_color", Color(0.7, 0.45, 0.4, 0.6))
+	shoot_btn.add_theme_stylebox_override("normal", _round_style(Color(0.35, 0.1, 0.08, 0.6)))
+	shoot_btn.add_theme_stylebox_override("hover", _round_style(Color(0.45, 0.13, 0.1, 0.7)))
+	shoot_btn.add_theme_stylebox_override("pressed", _round_style(Color(0.7, 0.2, 0.15, 0.8)))
+	shoot_btn.add_theme_stylebox_override("disabled", _round_style(Color(0.1, 0.1, 0.1, 0.35)))
 	shoot_btn.button_down.connect(func() -> void:
 		player.fire_held = true
+		# A quick tap still fires once: at the target, else straight ahead.
 		if is_instance_valid(player.target):
-			player.shoot_at(player.target.global_position))  # a quick tap still fires once
+			player.shoot_at(player.target.global_position)
+		else:
+			player.shoot_at(player.global_position + player.facing * 100.0))
 	shoot_btn.button_up.connect(func() -> void: player.fire_held = false)
-	col.add_child(shoot_btn)
+	layer.add_child(shoot_btn)
+	shoot_btn.anchor_left = 1.0
+	shoot_btn.anchor_right = 1.0
+	shoot_btn.anchor_top = 1.0
+	shoot_btn.anchor_bottom = 1.0
+	shoot_btn.offset_right = -(STICK_MARGIN_X + 10.0)
+	shoot_btn.offset_left = shoot_btn.offset_right - 140.0
+	shoot_btn.offset_bottom = -(STICK_MARGIN_Y + 10.0)
+	shoot_btn.offset_top = shoot_btn.offset_bottom - 140.0
 
 	# Skip turn: shown only in combat; gives up whatever is left of your turn.
 	skip_btn = Button.new()
@@ -789,8 +937,9 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 	fight_btn.focus_mode = Control.FOCUS_NONE
 	fight_btn.custom_minimum_size = Vector2(90, 40)
 	fight_btn.add_theme_color_override("font_color", Color(1.0, 0.7, 0.4))
+	fight_btn.visible = false  # hidden for now; set to true to bring the button back
 	fight_btn.pressed.connect(func() -> void: combat.start_player_initiated())
-	col.add_child(fight_btn)
+	_top_col.add_child(fight_btn)
 	# Untarget: clears the target (NPC / barrel / crate) and the selected door or window.
 	untarget_btn = Button.new()
 	untarget_btn.text = "Untarget"
@@ -801,7 +950,7 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 		player.fire_held = false
 		player.set_target(null)
 		player.set_interact(null))
-	col.add_child(untarget_btn)
+	_top_col.add_child(untarget_btn)
 	# Auto reload (toggle): tops the magazine up by itself shortly after you stop firing.
 	var auto_btn := Button.new()
 	auto_btn.toggle_mode = true
@@ -821,8 +970,18 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 	panel.anchor_bottom = 1.0
 	panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	panel.offset_right = -130
+	panel.offset_right = -(STICK_MARGIN_X + 80.0 + 70.0 + 8.0 + DOOR_BTN + 12.0)  # left of the Shoot circle and its door buttons
 	panel.offset_bottom = -40
+
+
+## Flat round-cornered box that draws as a circle on a square button (used by the Shoot button).
+func _round_style(fill: Color, radius := 70.0, border := Color(1.0, 0.55, 0.45, 0.8)) -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = fill
+	s.set_corner_radius_all(int(radius))
+	s.set_border_width_all(3)
+	s.border_color = border
+	return s
 
 
 ## Player health bar under the controls hint.
@@ -916,6 +1075,17 @@ func _build_health_bar(layer: CanvasLayer) -> void:
 	xp_label.add_theme_constant_override("shadow_offset_x", 1)
 	xp_label.add_theme_constant_override("shadow_offset_y", 1)
 	layer.add_child(xp_label)
+	# Restart map: reloads this scene, so the map, the player and the enemies start over.
+	var restart_btn := Button.new()
+	restart_btn.text = "Restart map"
+	restart_btn.tooltip_text = "Start this map again from the beginning"
+	restart_btn.focus_mode = Control.FOCUS_NONE  # keep keys for walking / shooting
+	restart_btn.custom_minimum_size = Vector2(90, 40)
+	restart_btn.pressed.connect(func() -> void:
+		player.fire_held = false
+		get_tree().paused = false
+		get_tree().reload_current_scene())
+	_top_col.add_child(restart_btn)  # under Untarget, beside the weapon button
 	player.xp_changed.connect(func(total: int, added: int) -> void:
 		xp_label.text = "XP: %d" % total
 		if added > 0:
@@ -977,6 +1147,60 @@ func _build_hat_picker(layer: CanvasLayer) -> void:
 	close.focus_mode = Control.FOCUS_NONE
 	close.pressed.connect(func() -> void: panel.visible = false)
 	box.add_child(close)
+
+
+var _shoot_touch := -1  # finger index holding the Shoot button (-1 = none)
+var _pinch_fingers := {}  # finger index -> screen position, for fingers free to pinch
+
+
+## Two free fingers moving apart / together zoom the camera (limits are set in Player).
+## Fingers that start on the joystick or the Shoot button don't count.
+func _pinch_input(event: InputEvent) -> void:
+	if player == null or get_tree().paused:
+		return
+	var touch := event as InputEventScreenTouch
+	if touch != null:
+		if not touch.pressed:
+			_pinch_fingers.erase(touch.index)
+		elif not (stick != null and stick.get_global_rect().has_point(touch.position)) \
+				and not (shoot_btn != null and shoot_btn.get_global_rect().has_point(touch.position)):
+			_pinch_fingers[touch.index] = touch.position
+		return
+	var drag := event as InputEventScreenDrag
+	if drag == null or not _pinch_fingers.has(drag.index):
+		return
+	if _pinch_fingers.size() == 2:
+		var old_d: float = _pinch_fingers.values()[0].distance_to(_pinch_fingers.values()[1])
+		_pinch_fingers[drag.index] = drag.position
+		var new_d: float = _pinch_fingers.values()[0].distance_to(_pinch_fingers.values()[1])
+		if old_d > 8.0:
+			player.pinch_zoom(new_d / old_d)
+	else:
+		_pinch_fingers[drag.index] = drag.position
+
+
+## Second-finger taps. A phone only turns the FIRST finger into mouse clicks, so while one finger
+## holds the joystick, taps on the ammo icons (reload) and the Shoot button would be ignored.
+## Real touch events are handled here, by hit-testing those two controls.
+func _input(event: InputEvent) -> void:
+	_pinch_input(event)
+	var touch := event as InputEventScreenTouch
+	if touch == null or player == null or get_tree().paused:
+		return
+	if touch.pressed:
+		if ammo_icons != null and ammo_icons.visible and ammo_icons.get_global_rect().has_point(touch.position):
+			player.reload()
+		elif shoot_btn != null and not shoot_btn.disabled and shoot_btn.get_global_rect().has_point(touch.position):
+			_shoot_touch = touch.index
+			shoot_btn.button_down.emit()  # same as pressing it with the mouse
+		else:
+			for b in door_buttons.values():
+				if b.visible and not b.disabled and b.get_global_rect().has_point(touch.position):
+					b.pressed.emit()
+					break
+	elif touch.index == _shoot_touch:
+		_shoot_touch = -1
+		shoot_btn.button_up.emit()
 
 
 func _unhandled_input(event: InputEvent) -> void:

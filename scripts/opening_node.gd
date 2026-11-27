@@ -93,7 +93,7 @@ func set_outside(side: float) -> void:
 func update_badge(player_pos: Vector2) -> void:
 	if _badge == null or _badge_side == 0.0:
 		return
-	var near := global_position.distance_to(player_pos) <= BADGE_SHOW_DIST
+	var near := global_position.distance_to(player_pos) <= BADGE_SHOW_DIST and not (kind == "door" and is_open)
 	if near != _badge.visible:
 		_badge.visible = near
 

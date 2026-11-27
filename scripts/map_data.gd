@@ -24,6 +24,11 @@ static var working: Dictionary = {}
 static var current_path: String = DEFAULT_PATH
 static var _tex_cache: Dictionary = {}
 
+## Generated terrain textures are cached here. Bump TEX_CACHE_VERSION after changing get_texture()'s
+## painting code (a changed terrain definition is detected on its own).
+const TEX_DISK_CACHE := "user://tex_cache"
+const TEX_CACHE_VERSION := 1
+
 ## Multiplier for the automatic drop shadows (props, walls, roofs, doors, rails). 1.0 = default look.
 static var shadow_strength: float = 1.0
 const SHADOW_MAX := 2.5
@@ -160,7 +165,7 @@ static var THEMES: Dictionary = {
 		"background": "rail_dirt",
 		"ambient": Color(0.84, 0.82, 0.82),
 		"terrain": ["rail_dirt", "gravel", "grass", "grass_dark", "cliff", "river", "train_wood", "wood_planks_dark", "wood_deck", "wood_braced", "train_black", "train_blue", "train_red", "steel", "shadow", "blood"],
-		"props": ["weapon", "locomotive", "coal_car", "smoke", "bench", "window", "crate", "barrel", "torch", "tree", "bush", "rock"],
+		"props": ["weapon", "locomotive", "coal_car", "smoke", "wisp_smoke", "bench", "window", "crate", "barrel", "torch", "tree", "bush", "rock"],
 	},
 	"desert": {
 		"label": "Desert ruins",
@@ -225,6 +230,9 @@ const WALL_STYLES := {
 }
 const WALL_STYLE_ORDER := ["wall", "hull", "rail", "wagon"]
 
+## Overhead smoke props: drawn above everything, unlit, with an editable opacity.
+const SMOKE_PROPS := ["smoke", "wisp_smoke"]
+
 ## radius = selection/footprint size, solid = collision radius (0 = walk-through)
 static var PROPS: Dictionary = {
 	"tree": {"defence": 0.30, "label": "Tree", "radius": 56.0, "solid": 8.0, "fade": true},
@@ -233,6 +241,7 @@ static var PROPS: Dictionary = {
 	"locomotive": {"defence": 0.90, "label": "Locomotive", "radius": 220.0, "solid": 0.0, "rect": Vector2(150, 430)},
 	"coal_car": {"defence": 0.80, "label": "Coal tender", "radius": 100.0, "solid": 0.0, "rect": Vector2(190, 190)},
 	"smoke": {"label": "Smoke (overhead)", "radius": 90.0, "solid": 0.0, "fade": true},
+	"wisp_smoke": {"label": "Smoke 2 (overhead)", "radius": 100.0, "solid": 0.0, "fade": true},
 	"bench": {"defence": 0.30, "low": true, "label": "Train bench", "radius": 38.0, "solid": 0.0, "rect": Vector2(70, 28)},
 	"window": {"label": "Window", "radius": 24.0, "solid": 0.0},
 	"rock": {"defence": 0.60, "label": "Rock", "radius": 34.0, "solid": 28.0},
@@ -530,6 +539,16 @@ static func get_texture(type: String) -> Texture2D:
 	if _tex_cache.has(type):
 		return _tex_cache[type]
 	var def: Dictionary = TERRAIN.get(type, ROOFS.get(type, TERRAIN["grass"]))
+	# Painting 65,000 pixels in GDScript is slow, and the editor needs ~100 of these textures at
+	# start-up. So each one is saved as a PNG the first time and loaded from disk afterwards. The file
+	# name carries a hash of the terrain's definition, so editing a definition regenerates it.
+	var cache_file := "%s/%s_%d.png" % [TEX_DISK_CACHE, type, hash(str(def)) ^ TEX_CACHE_VERSION]
+	if FileAccess.file_exists(cache_file):
+		var cached := Image.load_from_file(cache_file)
+		if cached != null and not cached.is_empty():
+			var cached_tex := ImageTexture.create_from_image(cached)
+			_tex_cache[type] = cached_tex
+			return cached_tex
 	var noise := FastNoiseLite.new()
 	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	noise.frequency = def["freq"]
@@ -767,6 +786,11 @@ static func get_texture(type: String) -> Texture2D:
 			img.set_pixel(x, y, c)
 	var tex := ImageTexture.create_from_image(img)
 	_tex_cache[type] = tex
+	DirAccess.make_dir_recursive_absolute(TEX_DISK_CACHE)
+	for old in DirAccess.get_files_at(TEX_DISK_CACHE):  # drop outdated copies of this texture
+		if old.begins_with(type + "_") and old.get_basename().trim_prefix(type + "_").is_valid_int():
+			DirAccess.remove_absolute(TEX_DISK_CACHE.path_join(old))
+	img.save_png(cache_file)
 	return tex
 
 
@@ -981,6 +1005,32 @@ static func save_map(d: Dictionary, path: String) -> bool:
 	return true
 
 
+## Maps shipped inside the app (res://maps/*.json, listed in the export preset's include filter).
+const BUNDLED_DIR := "res://maps"
+
+
+## Copies the bundled maps into MAP_DIR (the writable per-device folder) the first time they are
+## missing, so a fresh install, e.g. on a phone, starts with them. Existing files are never
+## overwritten, so edits made on the device are kept.
+static func install_bundled_maps() -> void:
+	DirAccess.make_dir_recursive_absolute(MAP_DIR)
+	for file in DirAccess.get_files_at(BUNDLED_DIR):
+		# Exported builds may list files as "name.json.remap" or similar; keep the plain name.
+		var name := file.trim_suffix(".remap")
+		if not name.ends_with(".json"):
+			continue
+		var dest := MAP_DIR.path_join(name)
+		if FileAccess.file_exists(dest):
+			continue
+		var text := FileAccess.get_file_as_string(BUNDLED_DIR.path_join(name))
+		if text == "":
+			continue
+		var f := FileAccess.open(dest, FileAccess.WRITE)
+		if f != null:
+			f.store_string(text)
+			f.close()
+
+
 static func load_map(path: String) -> Dictionary:
 	if not FileAccess.file_exists(path):
 		return {}
@@ -994,6 +1044,7 @@ static func load_map(path: String) -> Dictionary:
 static func ensure_loaded() -> void:
 	if not working.is_empty():
 		return
+	install_bundled_maps()
 	var latest := _latest_map_path()
 	if latest != "":
 		current_path = latest

@@ -151,7 +151,7 @@ func _is_enemy(npc: NpcNode) -> bool:
 
 
 ## Kicking a door in: every hostile NPC inside that building is caught off guard. Combat starts
-## at once with their initiative at 0, and the player gets 2 actions in the first round.
+## at once with their initiative at 0, and the player gets 3 actions in the first round.
 func start_ambush(surprised: Array) -> void:
 	if active or surprised.is_empty():
 		return
@@ -223,7 +223,7 @@ func start(trigger: NpcNode, surprised: Array = [], player_first := false, extra
 	elif surprised.is_empty():
 		message.emit("Combat! Initiative (d20): " + ", ".join(parts))
 	else:
-		message.emit("Ambush! Caught by surprise. Initiative: " + ", ".join(parts) + ". You get 2 actions.")
+		message.emit("Ambush! Caught by surprise. Initiative: " + ", ".join(parts) + ". You get 3 actions.")
 	_start_turn()
 
 
@@ -293,7 +293,7 @@ func _start_turn() -> void:
 		player.begin_turn()
 		if _ambush_round:
 			_ambush_round = false
-			player.extra_actions = 1  # surprise bonus: 2 actions this first turn
+			player.extra_actions = 2  # surprise bonus: 3 actions this first turn
 	else:
 		var npc := node as NpcNode
 		if _try_yell(npc):
