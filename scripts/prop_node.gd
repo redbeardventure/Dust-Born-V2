@@ -16,6 +16,8 @@ var locked := false
 var water_inside := false
 var _hit_flash := 0.0
 
+## Burning-village props that redraw every frame (flickering flames).
+const ANIMATED_FIRES := ["building_fire", "small_fire", "burning_barrel", "burnt_tree"]
 const BARREL_HP := 30
 const CRATE_HP := 50
 
@@ -309,6 +311,18 @@ func _draw() -> void:
 			_draw_sacks(rng)
 		"wagon_lantern":
 			_draw_wagon_lantern()
+		"building_fire":
+			_draw_building_fire(rng)
+		"small_fire":
+			_draw_small_fire(rng)
+		"charred_beams":
+			_draw_charred_beams(rng)
+		"ash_pile":
+			_draw_ash_pile(rng)
+		"burnt_tree":
+			_draw_burnt_tree(rng)
+		"burning_barrel":
+			_draw_burning_barrel()
 		"weapon":
 			_draw_weapon_pickup()
 	if locked and not opened:
@@ -761,7 +775,7 @@ func _draw_campfire(rng: RandomNumberGenerator) -> void:
 func _process(delta: float) -> void:
 	if _pickup_live:
 		_tick_pickup(delta)
-	if kind == "campfire" or kind == "fireplace":
+	if kind == "campfire" or kind == "fireplace" or ANIMATED_FIRES.has(kind):
 		queue_redraw()
 	if kind == "smoke" or kind == "wisp_smoke":
 		_smoke_t += delta
@@ -1096,3 +1110,127 @@ func _draw_mushroom(rng: RandomNumberGenerator) -> void:
 		draw_circle(c, r, Color("a8342e") if i != 1 else Color("c8a46a"))
 		draw_circle(c, r * 0.55, Color("d4524a") if i != 1 else Color("e6c88a"))
 		draw_circle(c + Vector2(-r * 0.2, -r * 0.2), r * 0.18, Color("f4f0e0"))
+
+
+# ---------------------------------------------------------------- burning village theme
+
+## Animated top-down flames: a glowing pool, layered tongues (red, orange, yellow), a hot core and
+## rising sparks. `r` is the fire's radius, `tongues` the number of flame tongues round the centre.
+func _draw_flames(c: Vector2, r: float, tongues: int, t: float, phase: float) -> void:
+	var pulse := 1.0 + 0.09 * sin(t * 9.0 + phase) + 0.05 * sin(t * 17.0 + phase * 2.0)
+	draw_circle(c, r * 2.0, Color(1.0, 0.45, 0.12, 0.05 * pulse))
+	draw_circle(c, r * 1.5, Color(1.0, 0.5, 0.15, 0.09 * pulse))
+	draw_circle(c, r * 1.15, Color(0.75, 0.2, 0.05, 0.85))
+	for layer in 3:
+		var cols := [Color("d8340e"), Color("ff7a1c"), Color("ffd24a")]
+		var k := 1.0 - float(layer) * 0.3  # inner layers are shorter and thinner
+		for i in tongues:
+			var a := TAU * float(i) / float(tongues) + 0.5 * sin(t * 1.8 + float(i) + phase) + float(layer) * 0.25
+			var dir := Vector2(cos(a), sin(a))
+			var side := dir.orthogonal()
+			var ln := (r * 1.05 + r * 0.22 * sin(t * 7.0 + float(i) * 2.3 + phase) + r * 0.1 * sin(t * 13.0 + float(i))) * pulse * k
+			var w := r * 0.3 * k
+			draw_colored_polygon(PackedVector2Array([c + dir * r * 0.1 + side * w, c + dir * ln, c + dir * r * 0.1 - side * w]), cols[layer])
+	draw_circle(c, r * 0.5 * pulse, Color("ff9a28"))
+	draw_circle(c, r * 0.28 * (1.0 + 0.15 * sin(t * 12.0 + phase)), Color("fff0a0"))
+	for i in 7:
+		var ph := fposmod(t * 0.6 + float(i) * 0.15 + phase, 1.0)
+		var ang := float(i) * 2.1 + t * 0.6
+		draw_circle(c + Vector2(cos(ang), sin(ang)) * (r * 0.3 + ph * r * 1.6), maxf(r * 0.06, 1.0) * (1.0 - ph), Color(1.0, 0.75, 0.25, 1.0 - ph))
+
+
+func _fire_time() -> float:
+	return Time.get_ticks_msec() / 1000.0 + float(seed_v) * 1.7
+
+
+## Large blaze for a burning building: scorched ground, collapsed charred timbers and big flames.
+## Place it over a "Burning: ..." roof so the fire seems to break through.
+func _draw_building_fire(rng: RandomNumberGenerator) -> void:
+	var t := _fire_time()
+	draw_colored_polygon(_blob(54.0, 16, 0.2, rng), Color(0.05, 0.035, 0.03, 0.85))
+	draw_colored_polygon(_blob(40.0, 14, 0.25, rng), Color(0.12, 0.06, 0.03, 0.9))
+	for i in 6:  # fallen beams
+		var a := rng.randf() * TAU
+		var d := Vector2(cos(a), sin(a)) * rng.randf_range(16.0, 36.0)
+		var dir := Vector2(cos(a + 1.2), sin(a + 1.2)) * rng.randf_range(12.0, 22.0)
+		draw_line(d - dir, d + dir, Color("0e0a07"), 6.0)
+		draw_line(d - dir, d + dir, Color("2a1a10"), 3.0)
+		draw_line(d - dir * 0.6, d + dir * 0.2, Color(1.0, 0.45, 0.1, 0.55 + 0.25 * sin(t * 6.0 + float(i))), 1.5)
+	_draw_flames(Vector2.ZERO, 30.0, 9, t, 0.0)
+	for i in 3:  # smaller side flames
+		var a2 := rng.randf() * TAU
+		_draw_flames(Vector2(cos(a2), sin(a2)) * 30.0, 13.0, 6, t, float(i) * 1.3 + 0.7)
+
+
+func _draw_small_fire(rng: RandomNumberGenerator) -> void:
+	var t := _fire_time()
+	draw_colored_polygon(_blob(24.0, 10, 0.25, rng), Color(0.06, 0.04, 0.03, 0.8))
+	for i in 5:
+		var a := rng.randf() * TAU
+		var d := Vector2(cos(a), sin(a)) * rng.randf_range(4.0, 14.0)
+		var dir := Vector2(cos(a + 1.0), sin(a + 1.0)) * rng.randf_range(5.0, 10.0)
+		draw_line(d - dir, d + dir, Color("1a110a"), 3.5)
+	_draw_flames(Vector2.ZERO, 12.0, 6, t, 0.4)
+
+
+func _draw_charred_beams(rng: RandomNumberGenerator) -> void:
+	for i in 5:
+		var a := rng.randf_range(-0.5, 0.5) + (PI * 0.5 if i % 2 == 1 else 0.0)
+		var c := Vector2(rng.randf_range(-14, 14), rng.randf_range(-14, 14))
+		var h := Vector2(cos(a), sin(a)) * rng.randf_range(16.0, 30.0)
+		draw_line(c - h + _u(Vector2(2, 3)), c + h + _u(Vector2(2, 3)), MapData.shadow_color(0.3), 7.0)
+		draw_line(c - h, c + h, Color("0c0907"), 7.0)
+		draw_line(c - h, c + h, Color("241812"), 4.5)
+		draw_line(c - h * 0.9, c + h * 0.9, Color("3a2a20"), 1.2)
+		for k in 3:  # cracked, glowing patches
+			var p := c + h * rng.randf_range(-0.8, 0.8)
+			draw_circle(p, rng.randf_range(0.8, 1.6), Color(1.0, 0.5, 0.12, 0.7))
+
+
+func _draw_ash_pile(rng: RandomNumberGenerator) -> void:
+	var base := _blob(28.0, 12, 0.2, rng)
+	draw_colored_polygon(base, Color(0.16, 0.15, 0.14, 0.9))
+	draw_colored_polygon(_blob(19.0, 10, 0.2, rng, _u(Vector2(-2, -3))), Color(0.32, 0.3, 0.28, 0.9))
+	draw_colored_polygon(_blob(9.0, 8, 0.25, rng, _u(Vector2(-4, -5))), Color(0.5, 0.48, 0.45, 0.85))
+	for i in 7:
+		var p := Vector2(rng.randf_range(-20, 20), rng.randf_range(-20, 20))
+		if rng.randf() < 0.4:
+			draw_circle(p, rng.randf_range(0.8, 1.5), Color(1.0, 0.5, 0.15, 0.85))
+		else:
+			draw_circle(p, rng.randf_range(1.0, 2.5), Color(0.08, 0.07, 0.06, 0.8))
+
+
+## Dead tree stripped by fire: black boughs with a few embers still burning at the tips.
+func _draw_burnt_tree(rng: RandomNumberGenerator) -> void:
+	var t := _fire_time()
+	draw_colored_polygon(_blob(34.0, 14, 0.15, rng, _u(Vector2(7, 9))), MapData.shadow_color(0.25))
+	draw_colored_polygon(_blob(26.0, 14, 0.2, rng), Color(0.08, 0.07, 0.06, 0.7))  # ash on the ground
+	var off := rng.randf() * TAU
+	var tips: Array = []
+	for i in 7:
+		var a := off + TAU * float(i) / 7.0 + rng.randf_range(-0.2, 0.2)
+		var dir := Vector2(cos(a), sin(a))
+		var len := rng.randf_range(30.0, 44.0)
+		var mid := dir * len * 0.55
+		var tip := mid + dir.rotated(rng.randf_range(-0.6, 0.6)) * len * 0.45
+		draw_line(Vector2.ZERO, mid, Color("0d0a08"), 5.0)
+		draw_line(mid, tip, Color("0d0a08"), 3.0)
+		draw_line(mid, mid + dir.rotated(0.8) * len * 0.3, Color("0d0a08"), 2.0)
+		draw_line(Vector2.ZERO, mid, Color("2a2018"), 2.0)
+		tips.append(tip)
+	draw_circle(Vector2.ZERO, 5.0, Color("0d0a08"))
+	for i in tips.size():
+		if i % 3 == 0:  # burning tips
+			_draw_flames(tips[i], 4.5, 4, t, float(i))
+		else:
+			draw_circle(tips[i], 1.6, Color(1.0, 0.5, 0.12, 0.6 + 0.3 * sin(t * 5.0 + float(i))))
+
+
+func _draw_burning_barrel() -> void:
+	var t := _fire_time()
+	draw_circle(_u(Vector2(3, 4)), 14.0, MapData.shadow_color(0.3))
+	draw_circle(Vector2.ZERO, 14.0, Color("1c120a"))
+	draw_circle(Vector2.ZERO, 11.0, Color("3a2514"))
+	draw_arc(Vector2.ZERO, 12.5, 0.0, TAU, 24, Color("0c0c0c"), 1.5)
+	draw_circle(Vector2.ZERO, 9.0, Color("120a05"))
+	_draw_flames(Vector2.ZERO, 9.0, 6, t, 1.1)

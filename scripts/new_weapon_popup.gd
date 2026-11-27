@@ -9,6 +9,7 @@ signal closed
 const ACCENT := Color(1.0, 0.82, 0.3)
 const DIM := Color(0.72, 0.74, 0.78)
 const BAR_BG := Color(1, 1, 1, 0.12)
+const HandCards := preload("res://scripts/hand_cards.gd")
 
 
 static func show_for(parent: Node, key: String, info_only: bool = false) -> NewWeaponPopup:
@@ -76,23 +77,47 @@ func _build(key: String, info_only: bool = false) -> void:
 	var ups: Dictionary = player.get("upgrades") if player != null and "upgrades" in player else {}
 	var dmg := Weapons.damage_range(key)
 	var dmul := WeaponUpgrades.damage_mul(ups, key)
+	if player != null and player.has_method("card_damage_mul"):
+		dmul *= float(player.call("card_damage_mul", key))  # Upgrade Revolver cards
+	var mag: int = int(player.call("mag", key)) if player != null and player.has_method("mag") else int(w["mag"])
 	var dmg_lo := roundi(dmg.x * dmul)
 	var dmg_hi := roundi(dmg.y * dmul)
 	var dmg_text := str(dmg_lo) if dmg_lo == dmg_hi else "%d - %d" % [dmg_lo, dmg_hi]
-	var up_ok: bool = info_only and player != null and player.has_method("buy_upgrade")
-	stats.add_child(_stat("DAMAGE RANGE", dmg_text, float(dmg_hi) / _best("dmg", true), up_ok, player, key, "damage"))
-	stats.add_child(_stat("AMMO CAPACITY", "%d rounds" % int(w["mag"]), float(w["mag"]) / _best("mag", true)))
+	stats.add_child(_stat("DAMAGE RANGE", dmg_text, float(dmg_hi) / _best("dmg", true)))
+	stats.add_child(_stat("AMMO CAPACITY", "%d rounds" % mag, float(mag) / _best("mag", true)))
+
+	# Upgrade cards played on this weapon: the card, and what it added.
+	var card_kind := HandCards.upgrade_card_for(key)
+	var card_count := HandCards.upgrade_count(player, key) if player != null and card_kind != "" else 0
+	if card_count > 0:
+		var cd: Dictionary = HandCards.CARDS[card_kind]
+		var holder := VBoxContainer.new()
+		holder.alignment = BoxContainer.ALIGNMENT_CENTER
+		holder.add_theme_constant_override("separation", 4)
+		var shown := ActionCard.new()
+		shown.rises = false
+		shown.interactive = false
+		shown.kind = card_kind
+		shown.title = cd["title"]
+		shown.desc = cd["desc"]
+		shown.accent = cd["accent"]
+		holder.add_child(shown)
+		var added := _label("x%d  %s" % [card_count, HandCards.upgrade_effect(key, card_count)], 13, ACCENT)
+		added.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		holder.add_child(added)
+		mid.add_child(holder)
+		card.custom_minimum_size = Vector2(780, 0)
 	# Shorter is better for the two time stats, so their bars fill up as the time drops.
 	var reload_s := float(w["reload"]) * WeaponUpgrades.reload_mul(ups, key)
-	stats.add_child(_stat("RELOAD SPEED", "%.1f s" % reload_s, _best("reload", false) / reload_s, up_ok, player, key, "reload"))
+	stats.add_child(_stat("RELOAD SPEED", "%.1f s" % reload_s, _best("reload", false) / reload_s))
 	var delay_s := float(w["cooldown"]) * WeaponUpgrades.delay_mul(ups, key)
-	stats.add_child(_stat("SHOT DELAY", "%.2f s" % delay_s, _best("cooldown", false) / delay_s, up_ok, player, key, "delay"))
+	stats.add_child(_stat("SHOT DELAY", "%.2f s" % delay_s, _best("cooldown", false) / delay_s))
 
 	# Footer.
 	page.add_child(_rule())
 	var foot := HBoxContainer.new()
 	page.add_child(foot)
-	var hint := _label(("XP: %d   (use [+] to upgrade)" % int(player.get("xp")) if up_ok else "") if info_only else "Now in your hands. Switch weapons any time from the weapon wheel.", 12, DIM)
+	var hint := _label("" if info_only else "Now in your hands. Switch weapons any time from the weapon wheel.", 12, DIM)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	foot.add_child(hint)
@@ -102,13 +127,6 @@ func _build(key: String, info_only: bool = false) -> void:
 	go.pressed.connect(_close)
 	foot.add_child(go)
 	go.grab_focus.call_deferred()  # Space / Enter also continue
-
-
-## Redraws the card after an upgrade was bought.
-func _rebuild(key: String) -> void:
-	for c in get_children():
-		c.queue_free()
-	_build(key, true)
 
 
 func _close() -> void:
@@ -143,9 +161,7 @@ func _rule() -> ColorRect:
 
 
 ## One stat: small caption, big value, and a bar showing how it compares with the best weapon.
-## With `upgrade_stat` set, a [+] button next to the value spends XP to improve that stat.
-func _stat(caption: String, value: String, fill: float, can_upgrade: bool = false, player: Node = null,
-		key: String = "", upgrade_stat: String = "") -> Control:
+func _stat(caption: String, value: String, fill: float) -> Control:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 2)
 	box.add_child(_label(caption, 12, DIM))
@@ -154,25 +170,6 @@ func _stat(caption: String, value: String, fill: float, can_upgrade: bool = fals
 	var val := _label(value, 22, Color.WHITE)
 	val.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	line.add_child(val)
-	if can_upgrade:
-		var ups: Dictionary = player.get("upgrades")
-		var lv := WeaponUpgrades.level(ups, key, upgrade_stat)
-		var price := WeaponUpgrades.cost(ups, key, upgrade_stat)
-		line.add_child(_label("Lv %d/%d  " % [lv, WeaponUpgrades.MAX_LEVEL], 12, DIM))
-		var plus := Button.new()
-		plus.text = "+"
-		plus.custom_minimum_size = Vector2(32, 26)
-		plus.focus_mode = Control.FOCUS_NONE
-		if price == 0:
-			plus.disabled = true
-			plus.tooltip_text = "Max level"
-		else:
-			plus.disabled = int(player.get("xp")) < price
-			plus.tooltip_text = "Upgrade for %d XP" % price
-		plus.pressed.connect(func() -> void:
-			if player.call("buy_upgrade", key, upgrade_stat):
-				_rebuild(key))
-		line.add_child(plus)
 	var bar := ProgressBar.new()
 	bar.show_percentage = false
 	bar.max_value = 1.0

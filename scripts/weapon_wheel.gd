@@ -66,7 +66,7 @@ func _owned(key: String) -> bool:
 func _ammo_text(key: String) -> String:
 	if not Weapons.is_ranged(key):
 		return ""
-	var mag := Weapons.mag_size(key)
+	var mag: int = player.mag(key)
 	return "%d / %d" % [int(player._ammo.get(key, mag)), mag]
 
 

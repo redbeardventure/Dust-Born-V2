@@ -4,6 +4,7 @@ extends CharacterBody2D
 
 const SPEED := 160.0
 const Loadout := preload("res://scripts/loadout.gd")
+const HandCards := preload("res://scripts/hand_cards.gd")
 const SHOW_HANDS_FEET := false  # set to true to draw the hands, arms, fists and boots again
 const SHOW_SHOULDERS := false  # set to true to draw the shoulders / torso (shirt and vest) again
 const STEP_LENGTH := 22.0  # pixels walked per step
@@ -105,24 +106,91 @@ var xp := 0
 var upgrades := {}
 
 
-## Buys the next level of `stat` for `weapon` if there is XP for it. Returns true on success.
-func buy_upgrade(weapon_key: String, stat: String) -> bool:
-	var price := WeaponUpgrades.cost(upgrades, weapon_key, stat)
-	if price <= 0 or xp < price:
-		return false
-	xp -= price
-	var w: Dictionary = upgrades.get(weapon_key, {})
-	w[stat] = WeaponUpgrades.level(upgrades, weapon_key, stat) + 1
-	upgrades[weapon_key] = w
-	xp_changed.emit(xp, 0)
-	return true
-
-
 func add_xp(n: int) -> void:
 	if n <= 0:
 		return
 	xp += n
+	xp_earned += n
 	xp_changed.emit(xp, n)
+	_deal_cards()
+
+
+# ---------------------------------------------------------------- hand of cards (see hand_cards.gd)
+
+signal hand_changed
+signal card_drawn(kind: String)
+## Cards held, one entry per card (kinds from HandCards.CARDS; duplicates allowed).
+var hand: Array = []
+## All XP ever earned. Spending XP on weapon upgrades does not lower it, so cards are never lost or re-dealt.
+var xp_earned := 0
+var cards_dealt := 0
+## Upgrade cards played so far: weapon key -> count. They last for the whole game.
+var damage_cards := {}
+var mag_cards := {}
+## First Strike played: every fight on this map starts with the player first, and +1 action on the first turn.
+var first_strike := false
+## Fan the Hammer played: this turn's shot empties the revolver.
+var fan_hammer := false
+const FAN_INTERVAL := 0.09  # seconds between the rounds of a fanned volley
+
+
+## Magazine size of `key`, including Upgrade Shotgun cards.
+func mag(key: String) -> int:
+	if not Weapons.is_ranged(key):
+		return 0
+	return Weapons.mag_size(key) + int(mag_cards.get(key, 0)) * HandCards.SHOTGUN_MAG_STEP
+
+
+## Damage multiplier from Upgrade Revolver cards (used by Projectile.fire).
+func card_damage_mul(key: String) -> float:
+	return 1.0 + int(damage_cards.get(key, 0)) * HandCards.REVOLVER_DAMAGE_STEP
+
+
+## Deals one random card for every XP_PER_CARD xp earned that has not been paid out yet.
+@warning_ignore("integer_division")
+func _deal_cards() -> void:
+	while cards_dealt < xp_earned / HandCards.XP_PER_CARD:
+		cards_dealt += 1
+		var kind := HandCards.random_kind()
+		hand.append(kind)
+		card_drawn.emit(kind)
+	hand_changed.emit()
+
+
+## Whether the card `kind` in the hand could be played right now (used to grey out cards).
+func can_play_hand_card(kind: String) -> bool:
+	if hp <= 0 or not hand.has(kind):
+		return false
+	match kind:
+		"revolver_up", "shotgun_up":
+			return true
+		"first_strike":
+			return not turn_mode and not first_strike
+		"fan_hammer":
+			return turn_mode and my_turn and action_left and not _combat_run and not fan_hammer \
+					and weapon == "pistol" and ammo() >= 2
+	return false
+
+
+## Plays a card from the hand (the card is used up). Returns false when it can't be played now.
+func play_hand_card(kind: String) -> bool:
+	if not can_play_hand_card(kind):
+		return false
+	match kind:
+		"revolver_up":
+			damage_cards["pistol"] = int(damage_cards.get("pistol", 0)) + 1
+		"shotgun_up":
+			mag_cards["shotgun"] = int(mag_cards.get("shotgun", 0)) + 1
+			if _ammo.has("shotgun"):
+				_ammo["shotgun"] = int(_ammo["shotgun"]) + HandCards.SHOTGUN_MAG_STEP  # the extra slot comes loaded
+		"first_strike":
+			first_strike = true
+		"fan_hammer":
+			fan_hammer = true
+	hand.erase(kind)  # removes one copy
+	hand_changed.emit()
+	queue_redraw()
+	return true
 
 
 var map_size := Vector2(2048, 1728)
@@ -301,7 +369,7 @@ func _physics_process(delta: float) -> void:
 	# Out of ammo: reload by itself, except in a fight (there it costs the turn's action).
 	if not turn_mode and Weapons.is_ranged(weapon) and ammo() <= 0 and not is_reloading():
 		reload()
-	if auto_reload and not turn_mode and _since_shot >= AUTO_RELOAD_DELAY and Weapons.is_ranged(weapon) and not is_reloading() and ammo() < Weapons.mag_size(weapon):
+	if auto_reload and not turn_mode and _since_shot >= AUTO_RELOAD_DELAY and Weapons.is_ranged(weapon) and not is_reloading() and ammo() < mag(weapon):
 		reload()
 	if _hurt_flash > 0.0:
 		_hurt_flash = maxf(_hurt_flash - delta, 0.0)
@@ -646,7 +714,7 @@ func set_weapon(key: String) -> void:
 
 ## Shots left in the current weapon's magazine (each weapon keeps its own count).
 func ammo() -> int:
-	return int(_ammo.get(weapon, Weapons.mag_size(weapon)))
+	return int(_ammo.get(weapon, mag(weapon)))
 
 
 func is_reloading() -> bool:
@@ -662,19 +730,19 @@ func reload_progress() -> float:
 
 ## Starts refilling the magazine (R, or automatically when it runs dry).
 func reload() -> void:
-	if not Weapons.is_ranged(weapon) or is_reloading() or ammo() >= Weapons.mag_size(weapon):
+	if not Weapons.is_ranged(weapon) or is_reloading() or ammo() >= mag(weapon):
 		return
 	if turn_mode and not (my_turn and action_left):
 		return  # turn-based: reloading is your turn's action
-	var spent := _casings_left_to_eject(Weapons.mag_size(weapon) - ammo())
+	var spent := _casings_left_to_eject(mag(weapon) - ammo())
 	if turn_mode:
 		_spend_action()
 		_clear_path()
-		_ammo[weapon] = Weapons.mag_size(weapon)  # takes the action instead of real time
+		_ammo[weapon] = mag(weapon)  # takes the action instead of real time
 	else:
 		# Only the missing rounds are loaded, so a partly full magazine reloads proportionally faster.
-		var missing := Weapons.mag_size(weapon) - ammo()
-		_reload_total = float(Weapons.RANGED[weapon]["reload"]) * WeaponUpgrades.reload_mul(upgrades, weapon) * float(missing) / float(Weapons.mag_size(weapon))
+		var missing := mag(weapon) - ammo()
+		_reload_total = float(Weapons.RANGED[weapon]["reload"]) * WeaponUpgrades.reload_mul(upgrades, weapon) * float(missing) / float(mag(weapon))
 		_reload_left = _reload_total
 	# Throw out one spent casing per round being reloaded, from the gun (part way along it).
 	if weapon != "flintlock":  # a flintlock has no brass: its wad leaves with the shot
@@ -729,7 +797,7 @@ func _tick_reload(delta: float) -> void:
 	_reload_left -= delta
 	if _reload_left <= 0.0:
 		_reload_left = 0.0
-		_ammo[weapon] = Weapons.mag_size(weapon)
+		_ammo[weapon] = mag(weapon)
 
 
 ## False when a wall sits between the body and the muzzle (gun poking through a wall);
@@ -847,6 +915,20 @@ func shoot_at(target: Vector2) -> void:
 	_cooldown = float(Weapons.RANGED[weapon]["cooldown"]) * WeaponUpgrades.delay_mul(upgrades, weapon)
 	_since_shot = 0.0
 	_ammo[weapon] = ammo() - 1
+	if fan_hammer and weapon == "pistol":
+		# Fan the Hammer card: the rest of the cylinder follows the first round, all in this one action.
+		fan_hammer = false
+		var volley := ammo()
+		_ammo[weapon] = 0
+		_cooldown += volley * FAN_INTERVAL
+		var fan_weapon := weapon
+		for i in range(1, volley + 1):
+			get_tree().create_timer(i * FAN_INTERVAL).timeout.connect(func() -> void:
+				if is_inside_tree() and hp > 0 and weapon == fan_weapon:
+					var d := target - global_position
+					if d.length() >= 1.0:
+						facing = d.normalized()
+						_release_shot(target, facing))
 	if weapon == "rifle":
 		_rifle_eject_timer = float(Weapons.RANGED[weapon]["cooldown"]) * RIFLE_EJECT_AT
 	if weapon == "flintlock":
@@ -1224,7 +1306,7 @@ func enter_combat() -> void:
 	_clear_path()
 	if _reload_left > 0.0:  # finish a reload that was under way
 		_reload_left = 0.0
-		_ammo[weapon] = Weapons.mag_size(weapon)
+		_ammo[weapon] = mag(weapon)
 	_zoom_camera(COMBAT_ZOOM)
 	queue_redraw()
 
@@ -1257,8 +1339,8 @@ func play_card(kind: String) -> bool:
 			aimed = true  # applies to this turn's shot
 		"reload":
 			# Quick reload: refill without using the turn's action.
-			var spent := _casings_left_to_eject(Weapons.mag_size(weapon) - ammo())
-			_ammo[weapon] = Weapons.mag_size(weapon)
+			var spent := _casings_left_to_eject(mag(weapon) - ammo())
+			_ammo[weapon] = mag(weapon)
 			if weapon != "flintlock":
 				ShellCasings.spawn(get_tree().current_scene, global_position + facing * 12.0, facing, spent,
 						"shell" if weapon == "shotgun" else "brass")
@@ -1277,7 +1359,7 @@ func can_play_card(kind: String) -> bool:
 		"aim":
 			return action_left and Weapons.is_ranged(weapon)
 		"reload":
-			return Weapons.is_ranged(weapon) and ammo() < Weapons.mag_size(weapon)
+			return Weapons.is_ranged(weapon) and ammo() < mag(weapon)
 	return false
 
 
@@ -1300,6 +1382,7 @@ func begin_turn() -> void:
 	action_left = true
 	card_played = false
 	aimed = false
+	fan_hammer = false
 	_cooldown = 0.0
 	_flee_set = false  # a new random run-away spot each turn
 	_refresh_spots()
@@ -1312,6 +1395,7 @@ func end_turn() -> void:
 	action_left = false
 	extra_actions = 0
 	aimed = false
+	fan_hammer = false
 	fire_held = false
 	_combat_run = false
 	_spots.clear()

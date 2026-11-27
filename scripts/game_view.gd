@@ -2,6 +2,7 @@ extends Node2D
 ## Play-test screen: loads the working map with collisions and lighting and spawns a player.
 
 const HeadArt := preload("res://scripts/head_art.gd")
+const CountryMap := preload("res://scripts/country_map.gd")
 
 var renderer: MapRenderer
 var player: Player
@@ -39,6 +40,9 @@ var _hp_refresh := 0.0
 var _bounty_total := 0     # bounty NPCs on the map when play-test started
 var _saw_hostile := false  # (maps without bounties) a hostile NPC has been alive at some point
 var _game_over := false
+var _destinations: Array = []  # map polygons of type "destination": {points, coins?, bounties?}
+var _dest_hint_until := 0      # Time.get_ticks_msec() before which the "can't leave yet" hint stays quiet
+var _win_title := ""           # overrides the victory heading (set for destination wins)
 const COMBAT_FONT := 10  # font size in the compact combat box
 
 ## Special-action cards dealt along the bottom of the screen during combat (one per turn).
@@ -48,10 +52,17 @@ const COMBAT_CARDS := [
 	{"kind": "aim", "title": "Aimed Shot", "desc": "This turn's shot flies dead straight, hits 50% harder and reaches 50% further.", "accent": Color(0.8, 0.25, 0.2)},
 	{"kind": "reload", "title": "Quick Reload", "desc": "Refill your gun without using your action.", "accent": Color(0.8, 0.6, 0.15)},
 ]
+## Set to true to bring back the old always-available combat cards (Dash, Aimed Shot, Quick Reload).
+## They are hidden for now; the earned hand of cards (hand_cards.gd) replaces them.
+const SHOW_COMBAT_CARDS := false
 const CARD_GAP := 12.0
 var card_row: Control
 var cards: Array = []  # ActionCard nodes
 var _last_card := ""  # kind of the card played this turn (for its USED stamp)
+const DeckPile := preload("res://scripts/deck_pile.gd")
+const HandPopup := preload("res://scripts/hand_popup.gd")
+var deck: Control  # face-down deck of earned cards (deck_pile.gd)
+var _hand_popup: CanvasLayer  # the opened hand, while it is up
 var ammo_icons: Control
 const AMMO_SCALE := 3.0  # how much bigger the ammo graphic is drawn than its 22 px design
 const PROFILE_SIZE := 80.0  # profile picture button in the top-left corner
@@ -86,7 +97,7 @@ func _process(delta: float) -> void:
 	if skip_btn != null:
 		skip_btn.visible = combat != null and combat.active
 		if _action_panel != null:
-			_action_panel.visible = skip_btn.visible  # no empty box outside combat
+			_action_panel.visible = false  # the old box is empty now that the combat buttons are round
 		skip_btn.disabled = not (combat != null and combat.is_player_turn() and not player.is_running())
 	if untarget_btn != null:
 		untarget_btn.disabled = not (is_instance_valid(player.target) or is_instance_valid(player.interact))
@@ -117,7 +128,7 @@ func _process(delta: float) -> void:
 	if ammo_icons != null:
 		var gun := Weapons.is_ranged(Player.weapon)
 		var go := not player.turn_mode or (player.my_turn and player.action_left)
-		var can_reload := gun and go and not player.is_reloading() and player.ammo() < Weapons.mag_size(Player.weapon)
+		var can_reload := gun and go and not player.is_reloading() and player.ammo() < player.mag(Player.weapon)
 		ammo_icons.tooltip_text = "Click to reload%s" % (" (uses your action)" if player.turn_mode else "") if can_reload else (
 				"" if not gun else
 				"Wait for your turn" if not go else
@@ -222,10 +233,10 @@ func _update_ammo() -> void:
 		if ammo_icons != null:
 			ammo_icons.visible = false
 		return
-	var txt := "%s   Ammo %d / %d" % [Weapons.label(w), player.ammo(), Weapons.mag_size(w)]
+	var txt := "%s   Ammo %d / %d" % [Weapons.label(w), player.ammo(), player.mag(w)]
 	if player.is_reloading():
 		txt += "   Reloading..."
-	elif player.ammo() < Weapons.mag_size(w):
+	elif player.ammo() < player.mag(w):
 		txt += ""
 	ammo_label.text = txt
 	reload_bar.visible = player.is_reloading()
@@ -238,7 +249,7 @@ func _update_ammo() -> void:
 ## Loaded rounds are bright, spent ones dark. While reloading, the missing rounds fill in one by one with the progress.
 func _draw_ammo_icons() -> void:
 	var w := Player.weapon
-	var mag := Weapons.mag_size(w)
+	var mag := player.mag(w)
 	if mag <= 0:
 		return
 	var loaded := player.ammo()
@@ -382,6 +393,9 @@ func _ready() -> void:
 	add_child(renderer)
 	renderer.build(data)
 	_bounty_total = get_tree().get_nodes_in_group("bounty").size()
+	for p in data["polygons"]:
+		if str(p["type"]) == "destination" and (p["points"] as PackedVector2Array).size() >= 3:
+			_destinations.append(p)
 
 	player = Player.new()
 	player.map_size = data["size"]
@@ -424,6 +438,7 @@ func _ready() -> void:
 	combat.changed.connect(_refresh_combat_panel)
 	_build_combat_panel(layer)
 	_build_combat_cards(layer)
+	_build_hand(layer)
 	_build_hat_picker(layer)
 	_minimap = Minimap.create(data)  # overview map, top-right
 	layer.add_child(_minimap)
@@ -431,6 +446,11 @@ func _ready() -> void:
 	_build_action_bar(layer)
 	_build_health_bar(layer)
 	_build_joystick(layer)
+	if not _destinations.is_empty():
+		var goal_coins := 0
+		for d in _destinations:
+			goal_coins = maxi(goal_coins, int(d.get("coins", 0)))
+		_flash_message("Objective: reach the destination" + (" with %d coins" % goal_coins if goal_coins > 0 else ""))
 
 
 ## On-screen joystick at the bottom left; its push drives player.joystick (same as the arrow keys).
@@ -561,6 +581,10 @@ func _check_game_over() -> void:
 		return
 	var won := false
 	var why := ""
+	if not _destinations.is_empty():
+		# The map has a destination: walking into one (with its requirements met) is the only way to win.
+		_check_destinations()
+		return
 	if _bounty_total > 0:
 		won = get_tree().get_nodes_in_group("bounty").is_empty()
 		why = "Every bounty has been collected." if _bounty_total > 1 else "The bounty has been collected."
@@ -578,8 +602,41 @@ func _check_game_over() -> void:
 		_show_game_over(why)
 
 
+## Destination areas (polygons of type "destination"): finishing needs the player inside one while
+## the purse holds its coins and, if it asks for that, every bounty is dead. Otherwise a short
+## message says what is missing (at most every 2.5 seconds, so standing inside doesn't spam it).
+func _check_destinations() -> void:
+	var inside: Dictionary = {}
+	for d in _destinations:
+		if Geometry2D.is_point_in_polygon(player.global_position, d["points"]):
+			inside = d
+			var need_coins := int(d.get("coins", 0))
+			var bounties_left := get_tree().get_nodes_in_group("bounty").size() if bool(d.get("bounties", false)) else 0
+			if player.gold >= need_coins and bounties_left == 0:
+				_win_title = "MAP COMPLETE"
+				_show_game_over("You reached the destination." if need_coins <= 0 else "You reached the destination with %d coins." % player.gold)
+				return
+	if inside.is_empty():
+		return
+	var now := Time.get_ticks_msec()
+	if now < _dest_hint_until:
+		return
+	_dest_hint_until = now + 2500
+	var missing: Array = []
+	if player.gold < int(inside.get("coins", 0)):
+		missing.append("%d more coins" % (int(inside["coins"]) - player.gold))
+	var left := get_tree().get_nodes_in_group("bounty").size()
+	if bool(inside.get("bounties", false)) and left > 0:
+		missing.append("%d bount%s to collect" % [left, "y" if left == 1 else "ies"])
+	_flash_message("Can't leave yet: need " + " and ".join(missing))
+
+
 func _show_game_over(why: String) -> void:
 	_game_over = true
+	# Started from a location on the country map: finishing it unlocks the next one.
+	var from_country := CountryMap.pending_id >= 0
+	if from_country:
+		CountryMap.mark_complete(CountryMap.pending_id)
 	if combat != null:
 		combat.end_combat("")
 	var layer := CanvasLayer.new()
@@ -606,7 +663,7 @@ func _show_game_over(why: String) -> void:
 	box.add_theme_constant_override("separation", 10)
 	panel.add_child(box)
 	var title := Label.new()
-	title.text = "BOUNTY COLLECTED" if _bounty_total > 0 else "VICTORY"
+	title.text = _win_title if _win_title != "" else ("BOUNTY COLLECTED" if _bounty_total > 0 else "VICTORY")
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 30)
 	title.add_theme_color_override("font_color", Color(1.0, 0.82, 0.3))
@@ -627,11 +684,15 @@ func _show_game_over(why: String) -> void:
 		get_tree().reload_current_scene())
 	row.add_child(again)
 	var back := Button.new()
-	back.text = "Back to editor"
+	back.text = "Back to map" if from_country else "Back to editor"
 	back.custom_minimum_size = Vector2(130, 40)
 	back.pressed.connect(func() -> void:
 		get_tree().paused = false
-		get_tree().change_scene_to_file("res://scenes/map_editor.tscn"))
+		if from_country:
+			CountryMap.open_map_screen = true
+			get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
+		else:
+			get_tree().change_scene_to_file("res://scenes/map_editor.tscn"))
 	row.add_child(back)
 	get_tree().paused = true  # the world stops; only the buttons above still work
 
@@ -724,6 +785,77 @@ func _build_combat_cards(layer: CanvasLayer) -> void:
 		cards.append(card)
 
 
+## The player's hand: cards earned with XP (one per 5 XP, see hand_cards.gd), shown along the bottom
+## of the screen just left of the combat cards, as a face-down deck. Click it to open the hand.
+func _build_hand(layer: CanvasLayer) -> void:
+	deck = DeckPile.new()
+	deck.rest_y = -DeckPile.SIZE.y * 0.6  # 60% of the deck shows, the rest is below the screen edge
+	# With the combat cards hidden the deck sits in the middle; otherwise just left of them.
+	var combat_w := (COMBAT_CARDS.size() * ActionCard.SIZE.x + (COMBAT_CARDS.size() - 1) * CARD_GAP) if SHOW_COMBAT_CARDS else -(CARD_GAP * 4.0 + ActionCard.SIZE.x)
+	# The deck moves by `position` (hover lift), so it sits in a zero-size holder anchored to the
+	# bottom centre, like the combat card row, instead of being anchored itself.
+	var holder := Control.new()
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.anchor_left = 0.5
+	holder.anchor_right = 0.5
+	holder.anchor_top = 1.0
+	holder.anchor_bottom = 1.0
+	layer.add_child(holder)
+	deck.position = Vector2(-combat_w * 0.5 - CARD_GAP * 2.0 - DeckPile.SIZE.x, deck.rest_y)
+	deck.tooltip_text = "Your cards (1 per 5 XP). Click to open."
+	deck.pressed.connect(_open_hand)
+	holder.add_child(deck)
+	deck.set_count(player.hand.size())
+	player.hand_changed.connect(func() -> void: deck.set_count(player.hand.size()))
+	player.card_drawn.connect(func(kind: String) -> void:
+		_flash_message("New card drawn! (%d in your deck)" % player.hand.size()))
+
+
+## A round, initially hidden combat button (Skip turn / End combat), styled like the door buttons.
+func _round_combat_button(text: String, font_col: Color) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.focus_mode = Control.FOCUS_NONE
+	b.add_theme_font_size_override("font_size", 13)
+	b.add_theme_color_override("font_color", font_col)
+	b.add_theme_color_override("font_disabled_color", Color(font_col, 0.4))
+	for st in ["normal", "hover", "pressed", "disabled"]:
+		var fill := Color(0.18, 0.14, 0.08, 0.7) if st != "pressed" else Color(0.5, 0.38, 0.15, 0.85)
+		if st == "disabled":
+			fill = Color(0.1, 0.1, 0.1, 0.45)
+		b.add_theme_stylebox_override(st, _round_style(fill, DOOR_BTN / 2.0, Color(0.9, 0.78, 0.4, 0.85 if st != "disabled" else 0.35)))
+	b.visible = false  # shown in combat by _process
+	return b
+
+
+## Puts a round button on the circle around the Shoot button, at `angle` degrees (0 = right, 90 = down).
+func _place_round_button(b: Button, angle: float, shoot_c: Vector2) -> void:
+	var centre: Vector2 = shoot_c + Vector2.from_angle(deg_to_rad(angle)) * (70.0 + DOOR_BTN * 0.5 + 8.0)
+	b.anchor_left = 1.0
+	b.anchor_right = 1.0
+	b.anchor_top = 1.0
+	b.anchor_bottom = 1.0
+	b.offset_left = centre.x - DOOR_BTN * 0.5
+	b.offset_right = centre.x + DOOR_BTN * 0.5
+	b.offset_top = centre.y - DOOR_BTN * 0.5
+	b.offset_bottom = centre.y + DOOR_BTN * 0.5
+
+
+## Opens the deck: the cards turn face up over the paused game until it is closed.
+func _open_hand() -> void:
+	if _game_over or _wheel_layer != null or _hand_popup != null or player.hand.is_empty():
+		return
+	player.fire_held = false
+	_hand_popup = HandPopup.new()
+	add_child(_hand_popup)
+	_hand_popup.setup(player)
+	_hand_popup.closed.connect(func() -> void:
+		_hand_popup = null
+		if not _game_over:
+			get_tree().paused = false)
+	get_tree().paused = true
+
+
 func _on_card_played(kind: String) -> void:
 	if not player.play_card(kind):
 		return
@@ -739,11 +871,12 @@ func _update_combat_cards() -> void:
 	if card_row == null:
 		return
 	var on := combat != null and combat.active
-	card_row.visible = on
+	var cards_shown := on and SHOW_COMBAT_CARDS
+	card_row.visible = cards_shown
 	if combat_border != null:
 		combat_border.visible = on
-	door_prompt.offset_top = -60.0 - (90.0 if on else 0.0)
-	message_label.offset_top = -100.0 - (90.0 if on else 0.0)
+	door_prompt.offset_top = -60.0 - (90.0 if cards_shown else 0.0)
+	message_label.offset_top = -100.0 - (90.0 if cards_shown else 0.0)
 	if not on:
 		return
 	if not player.card_played:
@@ -908,28 +1041,21 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 	shoot_btn.offset_top = shoot_btn.offset_bottom - 140.0
 
 	# Skip turn: shown only in combat; gives up whatever is left of your turn.
-	skip_btn = Button.new()
-	skip_btn.text = "Skip turn"
+	# Round buttons below the Shoot circle, like the door buttons beside it.
+	skip_btn = _round_combat_button("Skip\nturn", Color(0.7, 0.85, 1.0))
 	skip_btn.tooltip_text = "Do nothing this turn and pass to the next in the initiative order"
-	skip_btn.focus_mode = Control.FOCUS_NONE
-	skip_btn.custom_minimum_size = Vector2(90, 40)
-	skip_btn.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0))
-	skip_btn.visible = false
 	skip_btn.pressed.connect(func() -> void:
 		player.fire_held = false
 		combat.end_player_turn())
-	col.add_child(skip_btn)
+	layer.add_child(skip_btn)
+	_place_round_button(skip_btn, 120.0, shoot_c)
 	# End combat: shown only in combat; usable only while no enemy is attacking you.
-	end_combat_btn = Button.new()
-	end_combat_btn.text = "End combat"
-	end_combat_btn.focus_mode = Control.FOCUS_NONE
-	end_combat_btn.custom_minimum_size = Vector2(90, 40)
-	end_combat_btn.add_theme_color_override("font_color", Color(0.75, 1.0, 0.75))
-	end_combat_btn.visible = false
+	end_combat_btn = _round_combat_button("End\ncombat", Color(0.75, 1.0, 0.75))
 	end_combat_btn.pressed.connect(func() -> void:
 		player.fire_held = false
 		combat.player_end_combat())
-	col.add_child(end_combat_btn)
+	layer.add_child(end_combat_btn)
+	_place_round_button(end_combat_btn, 60.0, shoot_c)
 	# Start combat yourself: you go first, and keep taking turns while nobody has noticed you.
 	fight_btn = Button.new()
 	fight_btn.text = "Start combat"
@@ -1086,6 +1212,17 @@ func _build_health_bar(layer: CanvasLayer) -> void:
 		get_tree().paused = false
 		get_tree().reload_current_scene())
 	_top_col.add_child(restart_btn)  # under Untarget, beside the weapon button
+	# Exit: back to the home (main menu) screen.
+	var exit_btn := Button.new()
+	exit_btn.text = "Exit"
+	exit_btn.tooltip_text = "Leave this map and return to the home screen"
+	exit_btn.focus_mode = Control.FOCUS_NONE
+	exit_btn.custom_minimum_size = Vector2(90, 40)
+	exit_btn.pressed.connect(func() -> void:
+		player.fire_held = false
+		get_tree().paused = false
+		get_tree().change_scene_to_file("res://scenes/main_menu.tscn"))
+	_top_col.add_child(exit_btn)
 	player.xp_changed.connect(func(total: int, added: int) -> void:
 		xp_label.text = "XP: %d" % total
 		if added > 0:

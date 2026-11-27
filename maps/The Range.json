@@ -34,6 +34,108 @@
 			"species": "snake",
 			"speed": 3,
 			"xp": 4
+		},
+		{
+			"actions": 1,
+			"aggro": 2.0,
+			"color": "orange",
+			"disposition": "hostile",
+			"dmg_max": 8,
+			"dmg_min": 4,
+			"hp": 8,
+			"patrol": [],
+			"pos": [
+				1192.66,
+				588.57
+			],
+			"species": "snake",
+			"speed": 3,
+			"xp": 4
+		},
+		{
+			"actions": 1,
+			"aggro": 2.0,
+			"color": "orange",
+			"disposition": "hostile",
+			"dmg_max": 8,
+			"dmg_min": 4,
+			"hp": 8,
+			"patrol": [],
+			"pos": [
+				1214.7,
+				777.46
+			],
+			"species": "snake",
+			"speed": 3,
+			"xp": 4
+		},
+		{
+			"actions": 1,
+			"aggro": 2.0,
+			"color": "orange",
+			"disposition": "hostile",
+			"dmg_max": 8,
+			"dmg_min": 4,
+			"hp": 8,
+			"patrol": [],
+			"pos": [
+				868.4,
+				648.39
+			],
+			"species": "snake",
+			"speed": 3,
+			"xp": 4
+		},
+		{
+			"actions": 1,
+			"aggro": 2.0,
+			"color": "orange",
+			"disposition": "hostile",
+			"dmg_max": 8,
+			"dmg_min": 4,
+			"hp": 8,
+			"patrol": [],
+			"pos": [
+				934.51,
+				834.13
+			],
+			"species": "snake",
+			"speed": 3,
+			"xp": 4
+		},
+		{
+			"actions": 1,
+			"aggro": 2.0,
+			"color": "orange",
+			"disposition": "hostile",
+			"dmg_max": 8,
+			"dmg_min": 4,
+			"hp": 8,
+			"patrol": [],
+			"pos": [
+				688.96,
+				1051.35
+			],
+			"species": "snake",
+			"speed": 3,
+			"xp": 4
+		},
+		{
+			"actions": 1,
+			"aggro": 2.0,
+			"color": "orange",
+			"disposition": "hostile",
+			"dmg_max": 8,
+			"dmg_min": 4,
+			"hp": 8,
+			"patrol": [],
+			"pos": [
+				619.7,
+				752.28
+			],
+			"species": "snake",
+			"speed": 3,
+			"xp": 4
 		}
 	],
 	"background": "sand",
@@ -1030,6 +1132,36 @@
 			"scale": 0.935846120911525,
 			"seed": 159212041,
 			"type": "smoke"
+		},
+		{
+			"pos": [
+				2513.34,
+				962.0
+			],
+			"rot": 4.1849864617357,
+			"scale": 0.961566814361661,
+			"seed": 4143085550,
+			"type": "barrel"
+		},
+		{
+			"pos": [
+				2565.84,
+				964.42
+			],
+			"rot": 2.17692115905852,
+			"scale": 1.06007196648319,
+			"seed": 2748132498,
+			"type": "crate"
+		},
+		{
+			"pos": [
+				2621.58,
+				770.56
+			],
+			"rot": 6.15476871971327,
+			"scale": 1.00657580386942,
+			"seed": 3024880040,
+			"type": "trunk"
 		}
 	],
 	"roofs": [

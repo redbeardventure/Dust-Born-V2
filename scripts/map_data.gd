@@ -12,6 +12,8 @@ extends RefCounted
 ##             (bounty only on hostile NPCs: killing every bounty wins the play-test)
 ##             guard?: bool, guard_dir?: float degrees (0 = east, 90 = south): stands and faces that way
 ##   openings: [{kind: "door"|"window", pos, rot, width, thick}]   (sit in a wall; the wall is cut open there)
+##   polygons of type "destination" are the map objective: coins?: int (purse needed to finish),
+##             bounties?: bool (every bounty must be dead first). Walking into one completes the map.
 ##   roofs:    [{type (key of ROOFS), points: PackedVector2Array}]   (drawn above everything)
 ## NOTE: packed arrays are never mutated in place, only replaced, so undo snapshots stay valid.
 
@@ -75,6 +77,12 @@ static var ROOFS: Dictionary = {
 	"roof_shingle_grey": {"label": "Weathered grey shingles", "a": Color("45423e"), "b": Color("6b675f"), "freq": 0.07, "outline": Color(0.05, 0.05, 0.04, 0.9), "planks": false, "plank_w": 16, "vertical": false, "speckle": 0.03},
 	"roof_copper": {"label": "Weathered copper", "a": Color("3f7a68"), "b": Color("6fb09a"), "freq": 0.05, "outline": Color(0.08, 0.2, 0.17, 0.9), "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.03},
 	"roof_tile_brown": {"label": "Brown clay tiles", "a": Color("5b3a2a"), "b": Color("84563b"), "freq": 0.05, "outline": Color(0.12, 0.06, 0.04, 0.9), "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.02},
+	# --- burning buildings. "embers" = glowing colour painted along cracks (see get_texture), "ember_w" = crack width ---
+	"roof_burning": {"label": "Burning: shingles ablaze", "a": Color("1e1612"), "b": Color("4a2c1c"), "freq": 0.07, "outline": Color(0.03, 0.02, 0.02, 0.95), "planks": false, "plank_w": 16, "vertical": false, "patch": 0.1, "embers": Color("ff8a1f"), "ember_w": 0.05, "speckle": 0.05},
+	"roof_charred": {"label": "Burnt: charred shingles", "a": Color("14110f"), "b": Color("332a24"), "freq": 0.07, "outline": Color(0.02, 0.02, 0.02, 0.95), "planks": false, "plank_w": 16, "vertical": false, "patch": 0.16, "speckle": 0.05},
+	"roof_collapsed": {"label": "Burning: collapsing roof", "a": Color("120e0c"), "b": Color("3a2216"), "freq": 0.09, "outline": Color(0.02, 0.01, 0.01, 0.95), "planks": false, "plank_w": 8, "vertical": true, "patch": 0.3, "embers": Color("ffb030"), "ember_w": 0.07, "speckle": 0.08},
+	"roof_burning_thatch": {"label": "Burning: thatch ablaze", "a": Color("2a1a0e"), "b": Color("8a3a12"), "freq": 0.12, "outline": Color(0.1, 0.04, 0.02, 0.85), "planks": false, "embers": Color("ff6a14"), "ember_w": 0.08, "speckle": 0.16},
+	"roof_burning_tile": {"label": "Burning: scorched clay tiles", "a": Color("3a1c14"), "b": Color("7a3a24"), "freq": 0.06, "outline": Color(0.08, 0.03, 0.02, 0.95), "planks": false, "barrel_tile": 16, "course": 16, "embers": Color("ff7a1a"), "ember_w": 0.04, "speckle": 0.03},
 }
 
 static var TERRAIN: Dictionary = {
@@ -94,6 +102,8 @@ static var TERRAIN: Dictionary = {
 	"shadow": {"label": "Overlay: shadow", "a": Color(0, 0, 0, 0.25), "b": Color(0, 0, 0, 0.45), "freq": 0.01, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.0},
 	"moss": {"label": "Overlay: moss", "a": Color(0.25, 0.45, 0.1, 0.3), "b": Color(0.45, 0.65, 0.2, 0.5), "freq": 0.04, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.0},
 	"blood": {"label": "Overlay: blood", "a": Color(0.4, 0.03, 0.03, 0.45), "b": Color(0.6, 0.05, 0.05, 0.65), "freq": 0.06, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.0},
+	# Objective area: walking into it ends the map (see game_view.gd). Placed with the Destination tool.
+	"destination": {"label": "Objective: destination", "a": Color(1.0, 0.82, 0.2, 0.28), "b": Color(1.0, 0.9, 0.4, 0.45), "freq": 0.03, "outline": Color(1.0, 0.82, 0.2, 0.9), "blocks_scatter": false, "planks": false, "speckle": 0.0},
 	# --- wood / deck options (vertical = boards run top-to-bottom, plank = board width in px, varied = per-board shade) ---
 	"wood_vertical": {"label": "Wood: mid boards (vertical)", "a": Color("6b4526"), "b": Color("8f6338"), "freq": 0.04, "outline": Color(0.1, 0.07, 0.04, 0.7), "blocks_scatter": true, "planks": false, "plank_w": 32, "vertical": true, "speckle": 0.0},
 	"deck_ship": {"label": "Wood: ship deck (lengthwise)", "a": Color("5b3a20"), "b": Color("7d5632"), "freq": 0.05, "outline": Color(0.07, 0.04, 0.02, 0.9), "blocks_scatter": true, "planks": false, "plank_w": 16, "vertical": true, "speckle": 0.0},
@@ -148,6 +158,15 @@ static var TERRAIN: Dictionary = {
 	"wagon_ruts": {"label": "Wagon ruts (packed dirt)", "a": Color("6b5c45"), "b": Color("88785a"), "freq": 0.06, "outline": Color(0, 0, 0, 0), "blocks_scatter": true, "planks": false, "speckle": 0.1},
 	"wagon_boards": {"label": "Wagon: floor boards", "a": Color("6e4727"), "b": Color("93673b"), "freq": 0.04, "outline": Color(0.09, 0.05, 0.02, 0.9), "blocks_scatter": true, "planks": false, "plank_w": 16, "vertical": true, "speckle": 0.01},
 	"wagon_rug": {"label": "Wagon: green rug", "a": Color("2c5446"), "b": Color("3d6f5d"), "freq": 0.07, "outline": Color(0.8, 0.65, 0.3, 0.9), "blocks_scatter": true, "planks": false, "speckle": 0.0},
+	# --- burning village theme ---
+	"scorched_earth": {"label": "Burnt: scorched earth", "a": Color("2a1f17"), "b": Color("4d3826"), "freq": 0.05, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.08},
+	"ash": {"label": "Burnt: ash and soot", "a": Color("3a3836"), "b": Color("6a6764"), "freq": 0.04, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.1},
+	"burnt_grass": {"label": "Burnt: singed grass", "a": Color("3a3a1c"), "b": Color("6a5a24"), "freq": 0.03, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "speckle": 0.05},
+	"embers_ground": {"label": "Burnt: glowing embers", "a": Color("1c1410"), "b": Color("3e2618"), "freq": 0.05, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "embers": Color("ff7a18"), "ember_w": 0.045, "speckle": 0.06},
+	"lava_cracks": {"label": "Burnt: ground split by fire", "a": Color("2a1c14"), "b": Color("5a3a24"), "freq": 0.035, "outline": Color(0, 0, 0, 0), "blocks_scatter": false, "planks": false, "embers": Color("ffa028"), "ember_w": 0.03, "speckle": 0.04},
+	"charred_planks": {"label": "Burnt: charred floorboards", "a": Color("120e0b"), "b": Color("2e2118"), "freq": 0.04, "outline": Color(0.02, 0.01, 0.01, 0.85), "blocks_scatter": true, "planks": false, "plank_w": 16, "vertical": false, "cracks": true, "speckle": 0.03},
+	"burning_planks": {"label": "Burning: floorboards alight", "a": Color("1a120d"), "b": Color("3a2216"), "freq": 0.04, "outline": Color(0.02, 0.01, 0.01, 0.85), "blocks_scatter": true, "planks": false, "plank_w": 16, "vertical": false, "embers": Color("ff8a20"), "ember_w": 0.05, "speckle": 0.04},
+	"scorched_stone": {"label": "Burnt: sooty stone", "a": Color("26231f"), "b": Color("4a4640"), "freq": 0.06, "outline": Color(0.04, 0.03, 0.03, 0.8), "blocks_scatter": true, "planks": false, "speckle": 0.08},
 }
 
 ## Each theme is a palette for the editor plus default ground/ambient for new maps.
@@ -217,9 +236,19 @@ static var THEMES: Dictionary = {
 		"props": ["weapon", "wagon_wheel", "wagon_hitch", "wagon_seat", "trunk", "bedroll", "sacks", "wagon_lantern", "barrel", "crate", "campfire", "haybale", "stump", "rock", "bush", "tree"],
 		"scatter": ["tree", "rock", "bush"],
 	},
+	# Raided village: scorched ground, glowing embers, fires on and around the buildings. Pair the
+	# "Burning: ..." and "Burnt: ..." roofs with building_fire props placed on top of them.
+	"burning": {
+		"label": "Burning village",
+		"background": "burnt_grass",
+		"ambient": Color(0.62, 0.52, 0.5),
+		"terrain": ["burnt_grass", "scorched_earth", "ash", "embers_ground", "lava_cracks", "dirt", "grass_dark", "charred_planks", "burning_planks", "scorched_stone", "wood", "wood_worn", "wood_planks_dark", "stone", "cobble", "shadow", "blood"],
+		"props": ["weapon", "building_fire", "small_fire", "burning_barrel", "charred_beams", "ash_pile", "burnt_tree", "rubble", "smoke", "wisp_smoke", "barrel", "crate", "cart", "haybale", "well", "table", "torch", "rock", "bush"],
+		"scatter": ["burnt_tree", "ash_pile", "rubble", "small_fire"],
+	},
 }
 
-const THEME_ORDER := ["fantasy", "train", "desert", "snow", "town", "swamp", "coast", "wagon", "all"]
+const THEME_ORDER := ["fantasy", "train", "desert", "snow", "town", "swamp", "coast", "wagon", "burning", "all"]
 
 ## style -> [label, default width]
 const WALL_STYLES := {
@@ -287,6 +316,13 @@ static var PROPS: Dictionary = {
 	"bedroll": {"label": "Bedroll", "radius": 26.0, "solid": 0.0},
 	"sacks": {"defence": 0.40, "low": true, "label": "Grain sacks", "radius": 18.0, "solid": 12.0},
 	"wagon_lantern": {"label": "Wagon lantern (light)", "radius": 10.0, "solid": 0.0, "light": {"r": 230.0, "c": Color(1.0, 0.78, 0.45), "e": 1.0}},
+	# burning village (flames are animated, see PropNode.ANIMATED_KINDS)
+	"building_fire": {"label": "Building fire (light)", "radius": 56.0, "solid": 0.0, "light": {"r": 420.0, "c": Color(1.0, 0.5, 0.18), "e": 1.5}},
+	"small_fire": {"label": "Burning debris (light)", "radius": 26.0, "solid": 0.0, "light": {"r": 220.0, "c": Color(1.0, 0.55, 0.2), "e": 1.1}},
+	"charred_beams": {"defence": 0.25, "low": true, "label": "Charred beams", "radius": 34.0, "solid": 0.0, "no_shadow": true},
+	"ash_pile": {"label": "Ash and cinders", "radius": 30.0, "solid": 0.0},
+	"burnt_tree": {"defence": 0.25, "label": "Burnt tree", "radius": 44.0, "solid": 7.0, "fade": true},
+	"burning_barrel": {"defence": 0.35, "low": true, "label": "Burning barrel (light)", "radius": 15.0, "solid": 12.0, "light": {"r": 200.0, "c": Color(1.0, 0.55, 0.2), "e": 1.0}},
 }
 
 
@@ -781,6 +817,19 @@ static func get_texture(type: String) -> Texture2D:
 				var mv: float = src.get_pixel((x + 101) % 256, (y + 67) % 256).r
 				if mv > float(def.get("moss_t", 0.58)):
 					c = c.lerp(def["moss"], 0.7)
+			if def.has("embers"):
+				# Glowing cracks: a thin hot line (white-hot core) where a shifted copy of the noise crosses
+				# 0.5, with a soft orange halo either side. Used for burning roofs and scorched ground.
+				var ev: float = src.get_pixel((x + 53) % 256, (y + 131) % 256).r
+				var ed := absf(ev - 0.5)
+				var ew: float = def.get("ember_w", 0.04)
+				var hot: Color = def["embers"]
+				if ed < ew * 0.4:
+					c = hot.lightened(0.55)
+				elif ed < ew:
+					c = c.lerp(hot, 0.92)
+				elif ed < ew * 2.4:
+					c = c.lerp(hot, 0.3 * (1.0 - (ed - ew) / (ew * 1.4)))
 			if speckle > 0.0 and rng.randf() < speckle:
 				c = c.darkened(0.3) if rng.randf() < 0.5 else c.lightened(0.25)
 			img.set_pixel(x, y, c)
@@ -839,7 +888,12 @@ static func to_dict(d: Dictionary) -> Dictionary:
 	for r in d.get("roofs", []):
 		out["roofs"].append({"type": r["type"], "points": _pack(r["points"])})
 	for p in d["polygons"]:
-		out["polygons"].append({"type": p["type"], "points": _pack(p["points"])})
+		var po := {"type": p["type"], "points": _pack(p["points"])}
+		if int(p.get("coins", 0)) > 0:
+			po["coins"] = int(p["coins"])  # destination: coins needed to finish (only written when set)
+		if bool(p.get("bounties", false)):
+			po["bounties"] = true  # destination: every bounty must be dead first
+		out["polygons"].append(po)
 	for w in d["walls"]:
 		var wo := {"points": _pack(w["points"]), "closed": w["closed"], "width": w["width"], "style": w.get("style", "wall")}
 		if w.has("under"):
@@ -924,6 +978,10 @@ static func from_dict(j: Dictionary) -> Dictionary:
 	d["spawn"] = _v2(j.get("spawn"), d["size"] * 0.5)
 	for p in j.get("polygons", []):
 		d["polygons"].append(new_poly(str(p.get("type", "grass")), _unpack(p.get("points", []))))
+		if int(p.get("coins", 0)) > 0:
+			d["polygons"][d["polygons"].size() - 1]["coins"] = clampi(int(p["coins"]), 0, 999999)
+		if bool(p.get("bounties", false)):
+			d["polygons"][d["polygons"].size() - 1]["bounties"] = true
 	for r in j.get("roofs", []):
 		var rtype := str(r.get("type", "roof_shingle"))
 		d["roofs"].append(new_roof(rtype if ROOFS.has(rtype) else "roof_shingle", _unpack(r.get("points", []))))
@@ -1000,35 +1058,72 @@ static func save_map(d: Dictionary, path: String) -> bool:
 	if f == null:
 		push_error("Could not write map: %s" % path)
 		return false
-	f.store_string(JSON.stringify(to_dict(d), "\t"))
+	var text := JSON.stringify(to_dict(d), "\t")
+	f.store_string(text)
 	f.close()
+	# Saved from the Godot editor: also write the project's maps folder, which is what an exported
+	# build (e.g. the phone) ships with. Without this the PC's edits never reach the device.
+	if OS.has_feature("editor") and path.begins_with(MAP_DIR):
+		var mirror := FileAccess.open(BUNDLED_DIR.path_join(path.get_file()), FileAccess.WRITE)
+		if mirror != null:
+			mirror.store_string(text)
+			mirror.close()
 	return true
 
 
 ## Maps shipped inside the app (res://maps/*.json, listed in the export preset's include filter).
 const BUNDLED_DIR := "res://maps"
+## Remembers which version of each bundled map was last copied to the device (name -> md5 of its text).
+const INSTALLED_LOG := "user://bundled_maps.json"
 
 
-## Copies the bundled maps into MAP_DIR (the writable per-device folder) the first time they are
-## missing, so a fresh install, e.g. on a phone, starts with them. Existing files are never
-## overwritten, so edits made on the device are kept.
+## Copies the bundled maps into MAP_DIR (the writable per-device folder). A map missing there is
+## installed. When a new build ships a changed version of a map, it replaces the device's copy (the
+## old one is kept as name.json.bak). Otherwise existing files are left alone, so edits made on the
+## device are kept. Inside the Godot editor nothing is replaced, so work in progress is safe.
 static func install_bundled_maps() -> void:
 	DirAccess.make_dir_recursive_absolute(MAP_DIR)
+	var installed: Dictionary = {}
+	if FileAccess.file_exists(INSTALLED_LOG):
+		var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(INSTALLED_LOG))
+		if parsed is Dictionary:
+			installed = parsed
+	var log_changed := false
+	var in_editor := OS.has_feature("editor")
 	for file in DirAccess.get_files_at(BUNDLED_DIR):
 		# Exported builds may list files as "name.json.remap" or similar; keep the plain name.
 		var name := file.trim_suffix(".remap")
 		if not name.ends_with(".json"):
 			continue
-		var dest := MAP_DIR.path_join(name)
-		if FileAccess.file_exists(dest):
-			continue
 		var text := FileAccess.get_file_as_string(BUNDLED_DIR.path_join(name))
 		if text == "":
 			continue
+		var dest := MAP_DIR.path_join(name)
+		var version := text.md5_text()
+		if FileAccess.file_exists(dest):
+			if in_editor or str(installed.get(name, "")) == version:
+				continue
+			var old := FileAccess.get_file_as_string(dest)
+			if old == text:
+				installed[name] = version  # already up to date
+				log_changed = true
+				continue
+			var bak := FileAccess.open(dest + ".bak", FileAccess.WRITE)
+			if bak != null:
+				bak.store_string(old)
+				bak.close()
 		var f := FileAccess.open(dest, FileAccess.WRITE)
 		if f != null:
 			f.store_string(text)
 			f.close()
+			if not in_editor:
+				installed[name] = version
+				log_changed = true
+	if log_changed:
+		var lf := FileAccess.open(INSTALLED_LOG, FileAccess.WRITE)
+		if lf != null:
+			lf.store_string(JSON.stringify(installed))
+			lf.close()
 
 
 static func load_map(path: String) -> Dictionary:

@@ -32,6 +32,8 @@ static func fire(parent: Node, weapon: String, from: Vector2, dir: Vector2, by: 
 	if is_instance_valid(by) and "upgrades" in by:
 		var ups: Dictionary = by.get("upgrades")
 		damage_mul *= WeaponUpgrades.damage_mul(ups, weapon)
+	if is_instance_valid(by) and by.has_method("card_damage_mul"):
+		damage_mul *= float(by.call("card_damage_mul", weapon))  # hand cards (see hand_cards.gd)
 	var spread: float = float(w["spread"]) * spread_mul
 	var speed: float = w["speed"]
 	for i in int(w.get("pellets", 1)):

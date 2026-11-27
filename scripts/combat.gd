@@ -210,7 +210,8 @@ func start(trigger: NpcNode, surprised: Array = [], player_first := false, extra
 		if surprised.has(e["node"]):
 			e["roll"] = 0
 	_sort()
-	if player_first:
+	_first_strike_turn = player.first_strike  # First Strike card: +1 action on the first turn of every fight
+	if player_first or player.first_strike:
 		for i in order.size():
 			if order[i]["node"] == player:
 				order.insert(0, order.pop_at(i))
@@ -220,6 +221,8 @@ func start(trigger: NpcNode, surprised: Array = [], player_first := false, extra
 		parts.append("%s %d" % [e["name"], e["roll"]])
 	if player_first:
 		message.emit("You strike first! Hostiles that haven't noticed you can't act yet.")
+	elif player.first_strike and surprised.is_empty():
+		message.emit("First Strike! You go first with +1 action.")
 	elif surprised.is_empty():
 		message.emit("Combat! Initiative (d20): " + ", ".join(parts))
 	else:
@@ -294,6 +297,9 @@ func _start_turn() -> void:
 		if _ambush_round:
 			_ambush_round = false
 			player.extra_actions = 2  # surprise bonus: 3 actions this first turn
+		if _first_strike_turn:
+			_first_strike_turn = false
+			player.extra_actions += 1
 	else:
 		var npc := node as NpcNode
 		if _try_yell(npc):
@@ -308,6 +314,8 @@ func _start_turn() -> void:
 
 ## Actions an NPC / animal still has to take in its current turn after the first one.
 var _extra_actions := 0
+## The player's first turn of this fight is still to come and gets the First Strike bonus action.
+var _first_strike_turn := false
 
 
 ## Takes the current NPC's next action of this turn, if it has one left. Returns true if it acted.

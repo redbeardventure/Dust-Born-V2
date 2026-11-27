@@ -4,9 +4,9 @@ extends Node2D
 ## Tools: Select, Polygon, Wall, Prop, Light, Spawn, NPC.
 ## Right or middle mouse drag = pan, wheel = zoom, arrows = pan. Ctrl+Z / Ctrl+Y undo / redo, Ctrl+S save.
 
-enum Tool { SELECT, POLYGON, WALL, PROP, LIGHT, SPAWN, NPC, ANIMAL, OPENING, ROOF }
+enum Tool { SELECT, POLYGON, WALL, PROP, LIGHT, SPAWN, NPC, ANIMAL, OPENING, ROOF, DESTINATION }
 
-const TOOL_NAMES := ["Select (V)", "Polygon (P)", "Wall (W)", "Prop (O)", "Light (L)", "Spawn (T)", "NPC (N)", "Animal (A)", "Door / Window (D)", "Roof (H)"]
+const TOOL_NAMES := ["Select (V)", "Polygon (P)", "Wall (W)", "Prop (O)", "Light (L)", "Spawn (T)", "NPC (N)", "Animal (A)", "Door / Window (D)", "Roof (H)", "Destination (G)"]
 const PATROL_HINT := "PATROL AREA: click to add points. Click the first point, press Enter or right-click to close. Backspace removes the last point, Esc cancels."
 const TOOL_HINTS := [
 	"SELECT: click to select, drag to move. Drag white handles to edit points. Double-click an edge to add a point, right-click a point to remove it. Del deletes. [ ] change draw order. C copies, V pastes at the cursor. Drag on empty ground or an unselected floor to box-select (Shift adds; Shift-click toggles one). Ctrl+G groups, Ctrl+Shift+G ungroups, Ctrl+A selects all. Q / E rotate the selection 15° (hold to keep turning).",
@@ -19,6 +19,7 @@ const TOOL_HINTS := [
 	"ANIMAL: click to place an animal (rat, wolf...) with the settings at the top. Hostile animals attack when you come closer than their aggro range; friendly ones leave you alone until hurt. Select an animal, then use 'Draw patrol area' to set where it wanders.",
 	"DOOR / WINDOW: click on a wall to set a door or window into it (it snaps to the wall and cuts a gap). Windows let light through; doors can be opened or kicked open in play-test.",
 	"ROOF: click to add points. Click the first point, press Enter or right-click to close. Roofs sit above everything. In play-test the whole roof lifts when one of its doors is opened (and stays off), while the player is near one of its windows, or when the player walks under it (a roof with no doors then stays off too). Use the roof button below the tools to show / hide them.",
+	"DESTINATION: click to add points. Click the first point, press Enter or right-click to close. Walking into this area completes the map. Use the settings at the top to set the coins the player must carry and whether every bounty must be dead first.",
 ]
 const GRID := 32.0
 const HANDLE_PX := 7.0
@@ -104,6 +105,9 @@ var roof_bar: PanelContainer
 var roof_opt: OptionButton
 var roof_keys: Array = []
 var roof_toggle: Button
+var dest_bar: PanelContainer
+var dest_coins_spin: SpinBox
+var dest_bounty_check: CheckBox
 var copy_btn: Button
 var paste_btn: Button
 ## Copied object: {"kind": sel_kind, "item": deep copy of its data}; empty = nothing copied.
@@ -615,6 +619,32 @@ func _build_terrain_bar() -> void:
 	terrain_opt.custom_minimum_size.x = 200
 	terrain_opt.item_selected.connect(_on_terrain_selected)
 	_row(row, "Terrain", terrain_opt)
+
+
+## Destination settings: coins needed and bounties-first. Shown for a selected destination or the Destination tool.
+func _build_destination_bar() -> void:
+	dest_bar = PanelContainer.new()
+	dest_bar.visible = false
+	_top_stack().add_child(dest_bar)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	dest_bar.add_child(row)
+	dest_coins_spin = _spin(row, "Coins needed", 0, 99999, 0, 5, func(_v: float) -> void: _on_destination_changed())
+	dest_coins_spin.tooltip_text = "The player must carry at least this many coins to finish the map (0 = none)"
+	dest_bounty_check = _check(row, "Kill all bounties first", false, func(_on: bool) -> void: _on_destination_changed())
+
+
+func _sel_is_destination() -> bool:
+	return sel_kind == "polygon" and sel_idx >= 0 and sel_idx < data["polygons"].size() and str(data["polygons"][sel_idx]["type"]) == "destination"
+
+
+func _on_destination_changed() -> void:
+	if _ui_lock or not _sel_is_destination():
+		return
+	push_undo("destination")
+	var p: Dictionary = data["polygons"][sel_idx]
+	p["coins"] = int(dest_coins_spin.value)
+	p["bounties"] = dest_bounty_check.button_pressed
 
 
 ## Roof texture bar. Shown while a roof is selected or the Roof tool is active.
@@ -1150,6 +1180,13 @@ func _draw_tool_icon(c: Control, tool_id: int) -> void:
 			c.draw_rect(Rect2(P.call(10, 8), Vector2(24, 7) * u), Color(0.62, 0.84, 0.95, 0.6))
 			c.draw_rect(Rect2(P.call(10, 8), Vector2(24, 7) * u), Color("4a3a2c"), false, 1.5 * u)
 			c.draw_line(P.call(22, 8), P.call(22, 15), Color("4a3a2c"), 1.5 * u)
+		Tool.DESTINATION:  # gold target ring with a chequered flag
+			c.draw_arc(P.call(22, 22), 15.0 * u, 0.0, TAU, 24, gold, w)
+			c.draw_line(P.call(17, 32), P.call(17, 11), white, w)
+			for k in 6:
+				var cx := 17.0 + float(k % 3) * 5.0
+				var cy := 11.0 + float(k / 3) * 5.0
+				c.draw_rect(Rect2(P.call(cx, cy), Vector2(5, 5) * u), Color(0.1, 0.1, 0.1) if (k + k / 3) % 2 == 0 else white)
 		Tool.ROOF:  # pitched roof with vertex dots
 			_draw_roof_icon(c, true)
 			for p in [P.call(6, 34), P.call(6, 24), P.call(22, 9), P.call(38, 24), P.call(38, 34)]:
@@ -1233,6 +1270,7 @@ func _build_ui() -> void:
 
 	_build_terrain_bar()
 	_build_roof_bar()
+	_build_destination_bar()
 	_build_wall_bar()
 	_build_prop_bar()
 	_build_npc_bar()
@@ -1534,6 +1572,9 @@ func _sync_ui() -> void:
 			if not terrain_keys.has(ptype):
 				_set_palette("all")
 			terrain_opt.select(maxi(terrain_keys.find(ptype), 0))
+			if ptype == "destination":
+				dest_coins_spin.set_value_no_signal(int(data["polygons"][sel_idx].get("coins", 0)))
+				dest_bounty_check.set_pressed_no_signal(bool(data["polygons"][sel_idx].get("bounties", false)))
 		"roof":
 			roof_opt.select(maxi(roof_keys.find(str(data["roofs"][sel_idx]["type"])), 0))
 		"wall":
@@ -1619,6 +1660,8 @@ func _update_light_box() -> void:
 		terrain_bar.visible = sel_kind == "polygon" or cur_tool == Tool.POLYGON
 	if roof_bar != null:
 		roof_bar.visible = sel_kind == "roof" or cur_tool == Tool.ROOF
+	if dest_bar != null:
+		dest_bar.visible = cur_tool == Tool.DESTINATION or _sel_is_destination()
 	if wall_bar != null:
 		wall_bar.visible = sel_kind == "wall" or cur_tool == Tool.WALL
 	if prop_bar != null:
@@ -2214,6 +2257,8 @@ func _on_key(e: InputEventKey) -> void:
 					_ungroup_selected()
 				else:
 					_group_selected()
+			else:
+				_set_tool(Tool.DESTINATION)
 			return
 		KEY_A:
 			if ctrl:  # select everything (visible roofs included)
@@ -2278,7 +2323,7 @@ func _left_press(e: InputEventMouseButton) -> void:
 	match cur_tool:
 		Tool.SELECT:
 			_select_press(pos, e.double_click)
-		Tool.POLYGON, Tool.WALL, Tool.ROOF:
+		Tool.POLYGON, Tool.WALL, Tool.ROOF, Tool.DESTINATION:
 			_path_click(sp)
 		Tool.PROP:
 			_place_prop(sp)
@@ -2475,6 +2520,16 @@ func _finish_path(closed: bool) -> void:
 			return
 		push_undo()
 		data["polygons"].append(MapData.new_poly(_terrain_key(), pts))
+		renderer.rebuild_terrain()
+		_select("polygon", data["polygons"].size() - 1)
+	elif cur_tool == Tool.DESTINATION:
+		if pts.size() < 3:
+			return
+		push_undo()
+		var dest := MapData.new_poly("destination", pts)
+		dest["coins"] = int(dest_coins_spin.value)
+		dest["bounties"] = dest_bounty_check.button_pressed
+		data["polygons"].append(dest)
 		renderer.rebuild_terrain()
 		_select("polygon", data["polygons"].size() - 1)
 	elif cur_tool == Tool.ROOF:
@@ -3140,7 +3195,7 @@ func draw_overlay(o: Node2D) -> void:
 			o.draw_arc(mouse, rad, 0.0, TAU, 32, Color(1, 1, 1, 0.6), lw)
 		Tool.LIGHT:
 			o.draw_arc(mouse, radius_slider.value, 0.0, TAU, 48, Color(1, 0.85, 0.4, 0.5), lw)
-		Tool.POLYGON, Tool.WALL, Tool.ROOF:
+		Tool.POLYGON, Tool.WALL, Tool.ROOF, Tool.DESTINATION:
 			o.draw_circle(mouse, 3.0 / z, sel_col)
 		Tool.OPENING:
 			# Preview where the opening will land (snapped onto the nearest wall).
