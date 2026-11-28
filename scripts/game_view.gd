@@ -26,6 +26,7 @@ var weapon_btn: Button
 var weapon_icon: Control
 var _wheel_layer: CanvasLayer
 var untarget_btn: Button
+var next_target_btn: Button
 var fight_btn: Button
 var skip_btn: Button
 var end_combat_btn: Button
@@ -99,6 +100,8 @@ func _process(delta: float) -> void:
 		if _action_panel != null:
 			_action_panel.visible = false  # the old box is empty now that the combat buttons are round
 		skip_btn.disabled = not (combat != null and combat.is_player_turn() and not player.is_running())
+	if next_target_btn != null:
+		next_target_btn.disabled = player.hostile_targets().is_empty()
 	if untarget_btn != null:
 		untarget_btn.disabled = not (is_instance_valid(player.target) or is_instance_valid(player.interact))
 	if weapon_icon != null:
@@ -110,6 +113,8 @@ func _process(delta: float) -> void:
 		var armed := fists or Weapons.is_ranged(Player.weapon)
 		# A gun fires any time (at the target, else straight ahead); a punch needs a target.
 		var can_shoot := armed and my_go and (not fists or is_instance_valid(player.target))
+		if player.turn_mode and not is_instance_valid(player.target):
+			can_shoot = false  # in combat every shot needs a target
 		if fists and can_shoot and player.turn_mode and not player.in_punch_reach(player.target):
 			can_shoot = false  # in combat a punch needs the target right next to you
 		var walled: bool = not fists and player.in_wall_cover()
@@ -429,6 +434,15 @@ func _ready() -> void:
 	message_label.add_theme_constant_override("shadow_offset_y", 1)
 	message_label.modulate.a = 0.0
 	layer.add_child(message_label)
+	if not _destinations.is_empty():
+		var arrow := DestinationArrow.new()  # points at the nearest destination from the screen border
+		arrow.player = player
+		for d in _destinations:
+			var box := Rect2((d["points"] as PackedVector2Array)[0], Vector2.ZERO)
+			for pt in d["points"]:
+				box = box.expand(pt)
+			arrow.targets.append(box.get_center())
+		layer.add_child(arrow)
 	combat = Combat.new()
 	combat.player = player
 	add_child(combat)
@@ -934,8 +948,7 @@ func _update_combat_status() -> void:
 		if player.is_running():
 			combat_status.text = "Your turn\nrunning..."
 		else:
-			var mv := "click a marked spot to run (uses your turn)" if player.has_spots() else "no cover in reach"
-			combat_status.text = "Your turn\n%s, %s" % [mv, act]
+			combat_status.text = "Your turn\n%s%s" % ["" if player.has_spots() else "no cover in reach, ", act]
 		end_turn_btn.disabled = false
 	else:
 		combat_status.text = "%s's turn..." % combat.current_name()
@@ -1056,6 +1069,15 @@ func _build_action_bar(layer: CanvasLayer) -> void:
 		combat.player_end_combat())
 	layer.add_child(end_combat_btn)
 	_place_round_button(end_combat_btn, 60.0, shoot_c)
+	# Next target: always shown; cycles through hostile NPCs / animals in range or in the fight.
+	next_target_btn = _round_combat_button("Next\ntarget", Color(1.0, 0.6, 0.5))
+	next_target_btn.tooltip_text = "Target the next hostile NPC or animal in range or in the fight"
+	next_target_btn.visible = true
+	next_target_btn.pressed.connect(func() -> void:
+		player.fire_held = false
+		player.next_hostile_target())
+	layer.add_child(next_target_btn)
+	_place_round_button(next_target_btn, 0.0, shoot_c)
 	# Start combat yourself: you go first, and keep taking turns while nobody has noticed you.
 	fight_btn = Button.new()
 	fight_btn.text = "Start combat"

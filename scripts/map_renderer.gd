@@ -709,6 +709,9 @@ static func _cut_pieces(pieces: Array, center: Vector2, hw: float) -> Array:
 ## Draws one wall (or one piece of a cut wall) with its shadow, light occluder and collision.
 ## `flat_ends` squares off the ends (used where a door/window gap was cut) so the wall stops exactly at the frame.
 func _add_wall_piece(pts: PackedVector2Array, closed: bool, width: float, style: String, flat_ends: bool = false) -> void:
+	if MapData.is_fence(style):
+		_add_fence_piece(pts, closed, width, style)
+		return
 	var edge := Color(0.12, 0.1, 0.09)
 	var col_body := Color(0.52, 0.49, 0.44)
 	var hi := Color(0.7, 0.67, 0.6)
@@ -735,6 +738,33 @@ func _add_wall_piece(pts: PackedVector2Array, closed: bool, width: float, style:
 	_walls.add_child(lo)
 	if physics_enabled:
 		var body := StaticBody2D.new()
+		for i in path.size() - 1:
+			var cs := CollisionShape2D.new()
+			var seg := SegmentShape2D.new()
+			seg.a = path[i]
+			seg.b = path[i + 1]
+			cs.shape = seg
+			body.add_child(cs)
+		_walls.add_child(body)
+
+
+## A fence: drawn by FenceNode (one look per style). It blocks walking but not sight or shots:
+## it sits on the low collision layer, so projectiles fly over it like they do over low props,
+## and it has no light occluder.
+func _add_fence_piece(pts: PackedVector2Array, closed: bool, width: float, style: String) -> void:
+	var fn := FenceNode.new()
+	fn.points = pts
+	fn.closed = closed
+	fn.width = width
+	fn.variant = style
+	_wall_target.add_child(fn)
+	if physics_enabled:
+		var path := PackedVector2Array(pts)
+		if closed:
+			path.append(pts[0])
+		var body := StaticBody2D.new()
+		body.collision_layer = Projectile.LOW_MASK
+		body.set_meta("fence", true)  # the held gun is drawn over fences, not pulled back (player.gd)
 		for i in path.size() - 1:
 			var cs := CollisionShape2D.new()
 			var seg := SegmentShape2D.new()

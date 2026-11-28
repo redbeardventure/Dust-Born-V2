@@ -33,7 +33,7 @@ static func hint(kind: String) -> String:
 		"first_strike":
 			return "Can't be played during a fight, or twice."
 		"fan_hammer":
-			return "Play on your turn, with the revolver in hand and at least 2 rounds loaded."
+			return "Play on your turn, with the revolver in hand and at least 1 round loaded."
 	return ""
 
 

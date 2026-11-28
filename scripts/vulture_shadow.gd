@@ -1,7 +1,7 @@
 class_name VultureShadow
 extends Node2D
 ## The shadow of a vulture circling high above: every so often it glides across the map in a
-## straight, slightly drifting line, wings flapping now and then, then waits before the next pass.
+## straight, slightly drifting line with wings held out (a still silhouette), then waits before the next pass.
 
 const SPEED := 90.0
 const SIZE := 1.0  # overall scale of the silhouette
@@ -16,8 +16,6 @@ var _dir := Vector2.RIGHT
 var _drift := 0.0  # radians per second the heading bends
 var _end_dist := 0.0
 var _travelled := 0.0
-var _flap_t := 0.0
-var _glide := 0.0  # > 0: wings held out, not flapping
 
 
 func _ready() -> void:
@@ -36,18 +34,10 @@ func _process(delta: float) -> void:
 	position += _dir * SPEED * delta
 	_travelled += SPEED * delta
 	rotation = _dir.angle()
-	if _glide > 0.0:
-		_glide -= delta
-		_flap_t += delta * 1.5
-	else:
-		_flap_t += delta * 7.0
-		if randf() < delta * 0.35:
-			_glide = randf_range(1.0, 2.5)
 	if _travelled >= _end_dist:
 		_flying = false
 		visible = false
 		_wait = randf_range(MIN_WAIT, MAX_WAIT)
-	queue_redraw()
 
 
 func _start_pass() -> void:
@@ -66,36 +56,35 @@ func _start_pass() -> void:
 	rotation = _dir.angle()
 	_travelled = 0.0
 	_end_dist = start.distance_to(target) * 2.0 + MARGIN  # carries on past the middle and out
-	_flap_t = randf() * TAU
-	_glide = 0.0
 	_flying = true
 	visible = true
-	queue_redraw()
+
+
+## Right half of the soaring silhouette as (across, forward) pairs, from the head round the wing
+## (feathered tip, scalloped trailing edge) to the tail centre. The left half is its mirror.
+const HALF := [
+	Vector2(0.8, 7.0), Vector2(1.6, 5.0), Vector2(2.0, 3.4), Vector2(7.0, 3.0), Vector2(14.0, 3.6),
+	Vector2(19.0, 4.8), Vector2(23.5, 6.2), Vector2(21.8, 4.6), Vector2(25.5, 5.2), Vector2(23.0, 3.6),
+	Vector2(26.7, 4.0), Vector2(24.0, 2.4), Vector2(26.8, 2.4), Vector2(23.8, 1.0), Vector2(25.8, 0.4),
+	Vector2(22.5, -0.6), Vector2(19.0, -2.8), Vector2(15.0, -4.8), Vector2(10.0, -5.4), Vector2(7.5, -5.7),
+	Vector2(7.4, -7.0), Vector2(5.5, -10.5), Vector2(2.0, -12.2), Vector2(0.0, -12.5),
+]
+
+static var _shape := PackedVector2Array()
 
 
 func _draw() -> void:
-	# Local +X is the flight direction. Wings sweep up and down by changing their span.
-	var flap := sin(_flap_t) if _glide <= 0.0 else 0.15
-	var span := (30.0 - 9.0 * absf(flap)) * SIZE
-	var tip_back := (6.0 + 10.0 * flap) * SIZE  # tips swing back and forward as they beat
-	var col := Color(0, 0, 0, 0.3)
-	for side in [-1.0, 1.0]:
-		var s: float = side
-		draw_colored_polygon(PackedVector2Array([
-			Vector2(5, 0) * SIZE,
-			Vector2(2, s * span * 0.45),
-			Vector2(-4 - tip_back * 0.3, s * span * 0.8),  # finger feathers
-			Vector2(-9 - tip_back, s * span),
-			Vector2(-12, s * span * 0.6),
-			Vector2(-14, s * span * 0.25),
-			Vector2(-8, 0),
-		]), col)
-	# Body, head with a small hooked beak, and a fanned tail.
-	draw_colored_polygon(PackedVector2Array([
-		Vector2(8, 0) * SIZE, Vector2(4, 4) * SIZE, Vector2(-8, 3) * SIZE,
-		Vector2(-18, 6) * SIZE, Vector2(-18, -6) * SIZE, Vector2(-8, -3) * SIZE, Vector2(4, -4) * SIZE,
-	]), col)
-	draw_circle(Vector2(10, 0) * SIZE, 3.0 * SIZE, col)
-	draw_colored_polygon(PackedVector2Array([
-		Vector2(12, -1.5) * SIZE, Vector2(16, 0.5) * SIZE, Vector2(12, 1.5) * SIZE,
-	]), col)
+	# Local +X is the flight direction, so (across, forward) becomes Vector2(forward, across).
+	if _shape.is_empty():
+		var pts := PackedVector2Array()
+		for p: Vector2 in HALF:
+			pts.append(Vector2(p.y, p.x))
+		# Mirror half, skipping the tail centre that is already in the list.
+		for i in range(HALF.size() - 2, -1, -1):
+			var q: Vector2 = HALF[i]
+			pts.append(Vector2(q.y, -q.x))
+		_shape = pts
+	var scaled := PackedVector2Array()
+	for p in _shape:
+		scaled.append(p * SIZE)
+	draw_colored_polygon(scaled, Color(0, 0, 0, 0.3))

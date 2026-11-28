@@ -168,7 +168,7 @@ func can_play_hand_card(kind: String) -> bool:
 			return not turn_mode and not first_strike
 		"fan_hammer":
 			return turn_mode and my_turn and action_left and not _combat_run and not fan_hammer \
-					and weapon == "pistol" and ammo() >= 2
+					and weapon == "pistol" and ammo() >= 1
 	return false
 
 
@@ -857,8 +857,13 @@ func _gun_pull_for_blockers(off: Vector2, barrel_side: Vector2, reach: float) ->
 		var seg: Vector2 = tip - from
 		if seg.length() < 1.0:
 			continue
-		var q := PhysicsRayQueryParameters2D.create(from, tip, mask, [get_rid()])
+		var skip: Array[RID] = [get_rid()]
+		var q := PhysicsRayQueryParameters2D.create(from, tip, mask, skip)
 		var hit := space.intersect_ray(q)
+		while not hit.is_empty() and (hit["collider"] as Object).has_meta("fence"):
+			skip.append(hit["rid"])  # the gun reaches over fences
+			q.exclude = skip
+			hit = space.intersect_ray(q)
 		if hit.is_empty():
 			continue
 		# Fraction of the way to the tip where it hits; the gun has to give back the rest.
@@ -901,6 +906,7 @@ func shoot_at(target: Vector2) -> void:
 		draw_weapon()  # first pull it out; the shot comes after DRAW_TIME
 		return
 	if ammo() <= 0:
+		ClickText.spawn(self)  # empty gun: the hammer just clicks
 		if not turn_mode:
 			reload()  # in a fight reloading costs the turn's action, so it is never automatic
 		return
@@ -1943,6 +1949,36 @@ func cycle_target() -> void:
 		return global_position.distance_squared_to(a.global_position) < global_position.distance_squared_to(b.global_position))
 	var i := list.find(target)
 	set_target(list[(i + 1) % list.size()])
+
+
+## Living hostile NPCs and animals the player can pick: within targeting range, or already in the
+## fight (combat_mode) wherever they stand. Nearest first.
+func hostile_targets() -> Array:
+	var in_fight: Array = []
+	var cmb := get_tree().get_first_node_in_group("combat")
+	if cmb != null and cmb.get("active"):
+		for e in cmb.get("order"):
+			in_fight.append(e["node"])
+	var list: Array = []
+	for n in get_tree().get_nodes_in_group("npcs"):
+		if not is_instance_valid(n) or n.is_queued_for_deletion() or int(n.get("hp")) <= 0:
+			continue
+		if n.get("disposition") != "hostile":
+			continue
+		if in_fight.has(n) or global_position.distance_to(n.global_position) <= _target_range(n):
+			list.append(n)
+	list.sort_custom(func(a, b) -> bool:
+		return global_position.distance_squared_to(a.global_position) < global_position.distance_squared_to(b.global_position))
+	return list
+
+
+## Targets the next hostile after the current one (nearest first); wraps round. Does nothing when
+## none are in range or in the fight.
+func next_hostile_target() -> void:
+	var list := hostile_targets()
+	if list.is_empty():
+		return
+	set_target(list[(list.find(target) + 1) % list.size()])
 
 
 ## Click and hold on the ground: the move point follows the cursor until the button is released.

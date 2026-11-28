@@ -408,6 +408,9 @@ func _build_tool_bar() -> void:
 		roof_ic.queue_redraw()
 		overlay.queue_redraw())
 	col.add_child(roof_toggle)
+	# The Destination tool goes last, below the roof toggle (it is still part of the tool group).
+	col.add_child(HSeparator.new())
+	col.move_child(tool_buttons[Tool.DESTINATION], -1)
 	# Anchor to the left edge, vertically centred.
 	bar.anchor_left = 0.0
 	bar.anchor_right = 0.0
@@ -1751,6 +1754,9 @@ func _set_palette(p: String) -> void:
 		return str(MapData.PROPS[a]["label"]).naturalnocasecmp_to(str(MapData.PROPS[b]["label"])) < 0)
 	terrain_keys.sort_custom(func(a, b) -> bool:
 		return str(MapData.TERRAIN[a]["label"]).naturalnocasecmp_to(str(MapData.TERRAIN[b]["label"])) < 0)
+	if terrain_keys.has("destination"):  # the objective area goes last, below the A-Z terrain list
+		terrain_keys.erase("destination")
+		terrain_keys.append("destination")
 	terrain_opt.clear()
 	terrain_opt.add_theme_constant_override("icon_max_width", PROP_ICON_PX)
 	for k in terrain_keys:

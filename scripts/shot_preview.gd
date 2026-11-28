@@ -34,12 +34,14 @@ func _physics_process(_delta: float) -> void:
 	queue_redraw()
 
 
-## The NPC under the cursor, otherwise the locked target; null when no preview applies.
+## The NPC under the cursor; null when no preview applies (including while anything is targeted).
 func _pick_target() -> Node2D:
 	if player == null or player.hp <= 0 or not Weapons.is_ranged(player.weapon):
 		return null
 	if player.turn_mode and not player.my_turn:
 		return null
+	if is_instance_valid(player.target):
+		return null  # once something is targeted, the hover details (cone and card) stay hidden
 	var best: Node2D = null
 	if get_viewport().gui_get_hovered_control() == null:
 		var mp := get_global_mouse_position()
@@ -52,8 +54,6 @@ func _pick_target() -> Node2D:
 			if d < best_d:
 				best_d = d
 				best = npc
-	if best == null and is_instance_valid(player.target) and player.target.is_in_group("npcs"):
-		best = player.target
 	return best
 
 

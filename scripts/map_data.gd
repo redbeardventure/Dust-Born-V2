@@ -256,8 +256,22 @@ const WALL_STYLES := {
 	"hull": ["Train hull", 16.0],
 	"rail": ["Rail track", 70.0],
 	"wagon": ["Wagon side boards", 6.0],
+	# Fences (see FenceNode): low, see-through, projectiles fly over them.
+	"fence": ["Fence: wooden", 4.0],
+	"fence_cap": ["Fence: capped posts", 4.0],
+	"fence_iron": ["Fence: iron", 5.0],
+	"fence_cube": ["Fence: cube posts", 5.0],
+	"fence_ball": ["Fence: ball posts", 4.0],
+	"fence_panel": ["Fence: stone panels", 6.0],
+	"fence_rubble": ["Fence: low stone", 14.0],
 }
-const WALL_STYLE_ORDER := ["wall", "hull", "rail", "wagon"]
+const WALL_STYLE_ORDER := ["wall", "hull", "rail", "wagon", "fence", "fence_cap", "fence_iron",
+		"fence_cube", "fence_ball", "fence_panel", "fence_rubble"]
+
+
+## True for the fence wall styles: low walls that block walking but not sight or shots.
+static func is_fence(style: String) -> bool:
+	return style.begins_with("fence")
 
 ## Overhead smoke props: drawn above everything, unlit, with an editable opacity.
 const SMOKE_PROPS := ["smoke", "wisp_smoke"]
