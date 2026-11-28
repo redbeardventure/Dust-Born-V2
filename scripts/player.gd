@@ -442,6 +442,7 @@ func _physics_process(delta: float) -> void:
 	if _step_amount > 0.0:
 		queue_redraw()
 	_update_prints(delta, moved)
+	_update_cape(delta, moved)
 	if not _path.is_empty():
 		# Give up if blocked (no progress for half a second).
 		if position.distance_to(before) < speed * delta * 0.25:
@@ -1081,6 +1082,67 @@ const TORSO_D := 6.5         # half-depth of the torso (front to back)
 static var shirt_color := Color("3b6fb0")
 const VEST := Color("6a4426")
 const VEST_DARK := Color("4a2e18")
+
+## Cape: hangs behind the shoulders when standing; when moving it streams out behind and flutters.
+static var cape_enabled := true
+static var cape_color := Color("7a5232")
+const CAPE_REST_LEN := 8.0    # px it hangs behind the shoulders when standing
+const CAPE_FLY_LEN := 24.0    # px it streams out at full walking speed
+const CAPE_SEGMENTS := 7
+var _cape_dir := Vector2.LEFT  # the way the cape trails (lags behind the movement direction)
+
+
+## Eases the cape's trailing direction toward "behind the way we move" (or behind the facing at rest).
+func _update_cape(delta: float, moved: float) -> void:
+	var want := -facing
+	if moved > 0.2 and velocity.length() > 1.0:
+		want = -velocity.normalized()
+	if _cape_dir.dot(want) < -0.99:
+		_cape_dir = _cape_dir.rotated(0.2)
+	_cape_dir = _cape_dir.slerp(want, minf(1.0, 7.0 * delta)).normalized()
+	if cape_enabled and (_step_amount > 0.0 or _cape_dir.dot(want) < 0.999):
+		queue_redraw()
+
+
+## The cape, seen from above: a strip from the shoulders that lengthens, widens and ripples with speed.
+func _draw_cape() -> void:
+	var side := _cape_dir.orthogonal()
+	var fwd := facing
+	var t_now := Time.get_ticks_msec() / 1000.0
+	var fly := _step_amount
+	var length := lerpf(CAPE_REST_LEN, CAPE_FLY_LEN, fly)
+	var half_top := SHOULDER_W * 0.8
+	var anchor := -fwd * (TORSO_D - 1.0)  # across the back of the shoulders
+	var across := fwd.orthogonal()
+	if across.dot(side) < 0.0:
+		across = -across  # same side as the trail's edge direction, so blending them never folds the strip
+	var left := PackedVector2Array()
+	var right := PackedVector2Array()
+	var mid := PackedVector2Array()
+	for i in CAPE_SEGMENTS + 1:
+		var t := float(i) / float(CAPE_SEGMENTS)
+		var wave := sin(t_now * 16.0 - t * 5.0) * (1.0 + 4.0 * fly) * t
+		var half := half_top * lerpf(1.0, 1.0 + 0.35 * fly, t) * lerpf(1.0, 0.85, t * (1.0 - fly))
+		var c := anchor + _cape_dir * length * t + side * wave
+		# The edge across the shoulders stays square to the body; farther down it follows the trail.
+		var span := across.lerp(side, t).normalized()
+		left.append(c + span * half)
+		right.append(c - span * half)
+		mid.append(c)
+	# Filled one quad per segment (a single polygon breaks when the strip folds over itself), each
+	# edged in its own colour so neighbouring quads leave no seam.
+	for i in CAPE_SEGMENTS:
+		var quad := PackedVector2Array([left[i], left[i + 1], right[i + 1], right[i]])
+		draw_colored_polygon(quad, cape_color)
+		draw_polyline(PackedVector2Array([left[i], left[i + 1], right[i + 1], right[i], left[i]]), cape_color, 1.5)
+	draw_polyline(mid, cape_color.darkened(0.15), 1.5)  # centre fold
+	var outline := PackedVector2Array(left)
+	for i in range(right.size() - 1, -1, -1):
+		outline.append(right[i])
+	outline.append(left[0])
+	draw_polyline(outline, OUTLINE, 1.2)
+	# Clasp at the throat.
+	draw_circle(anchor + fwd * 0.5, 2.0, Color("d9b34a"))
 const SKIN := Color("e8c9a0")
 const OUTLINE := Color("101820")
 
@@ -2201,6 +2263,8 @@ func _draw() -> void:
 	var bs := step_scale()
 	var xf := Vector2(bs, bs)
 	draw_set_transform(Vector2.ZERO, 0.0, xf)
+	if cape_enabled:
+		_draw_cape()  # behind everything else on the character
 	if SHOW_HANDS_FEET:
 		_draw_legs()
 	# Shoulders show either side of the hat (drawing only; the collision circle is unchanged).

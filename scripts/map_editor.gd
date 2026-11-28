@@ -75,6 +75,8 @@ var wall_style_opt: OptionButton
 var palette := "fantasy"  # which theme's items the terrain/prop lists show ("all" shows everything)
 var scale_spin: SpinBox
 var rot_spin: SpinBox
+var prop_compass: Control  # compass that sets rot_spin (the prop rotation)
+var prop_compass_lbl: Label
 var rand_check: CheckBox
 var prop_loot_opt: OptionButton
 var prop_weapon_opt: OptionButton
@@ -579,6 +581,26 @@ func _build_prop_bar() -> void:
 	row.add_child(prop_opt)
 	scale_spin = _spin(row, "Scale", 0.2, 4.0, 1.0, 0.05, _on_prop_scale)
 	rot_spin = _spin(row, "Rotate", -180, 180, 0, 5, _on_prop_rot)
+	# The compass (same as the guard's Facing) replaces the number box; rot_spin stays as its hidden value.
+	rot_spin.get_parent().visible = false
+	var rot_box := HBoxContainer.new()
+	rot_box.add_theme_constant_override("separation", 4)
+	row.add_child(rot_box)
+	var rot_lbl := Label.new()
+	rot_lbl.text = "Rotate"
+	rot_box.add_child(rot_lbl)
+	prop_compass = Control.new()
+	prop_compass.custom_minimum_size = Vector2(36, 36)
+	prop_compass.tooltip_text = "Click or drag to rotate the prop (15° steps)"
+	prop_compass.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	prop_compass.draw.connect(func() -> void: _draw_compass(prop_compass, rot_spin.value))
+	prop_compass.gui_input.connect(_on_prop_compass_input)
+	rot_box.add_child(prop_compass)
+	prop_compass_lbl = Label.new()
+	prop_compass_lbl.custom_minimum_size.x = 64
+	rot_box.add_child(prop_compass_lbl)
+	rot_spin.value_changed.connect(func(_v: float) -> void: _update_prop_compass())
+	_update_prop_compass()
 	rand_check = _check(row, "Randomize on place", true)
 	# Loot inside the prop: only shown for props that can hold it (barrels and crates).
 	# It gets its own panel in the top stack, so it wraps onto a second line instead of running off-screen.
@@ -1594,6 +1616,7 @@ func _sync_ui() -> void:
 			prop_opt.select(maxi(prop_keys.find(pr["type"]), 0))
 			scale_spin.set_value_no_signal(pr["scale"])
 			rot_spin.set_value_no_signal(rad_to_deg(float(pr["rot"])))
+			_update_prop_compass()
 			prop_loot_opt.select(maxi(MapData.NPC_LOOT.keys().find(str(pr.get("loot", "none"))), 0))
 			if pr["type"] == MapData.WEAPON_PROP:
 				prop_weapon_opt.select(maxi(Weapons.PLAYER_CHOICES.find(str(pr.get("loot", "pistol"))), 0))
@@ -2046,23 +2069,51 @@ func _update_guard_dir_label() -> void:
 ## The little compass next to "Guard": a ring with N/E/S/W ticks and an arrow pointing the way
 ## the guard faces (screen directions: up = north).
 func _draw_guard_compass() -> void:
-	var c := npc_guard_compass.size * 0.5
+	_draw_compass(npc_guard_compass, npc_guard_dir)
+
+
+## Draws a compass ring on `ctl` with an arrow at `deg` (0 = east, 90 = south). Shared by the
+## guard's Facing and the prop's Rotate.
+func _draw_compass(ctl: Control, deg: float) -> void:
+	var c := ctl.size * 0.5
 	var r := minf(c.x, c.y) - 2.0
-	npc_guard_compass.draw_circle(c, r, Color(0.12, 0.12, 0.14))
-	npc_guard_compass.draw_arc(c, r, 0.0, TAU, 32, Color(0.7, 0.7, 0.7), 1.5)
+	ctl.draw_circle(c, r, Color(0.12, 0.12, 0.14))
+	ctl.draw_arc(c, r, 0.0, TAU, 32, Color(0.7, 0.7, 0.7), 1.5)
 	for k in 8:
 		var d := Vector2.from_angle(TAU * float(k) / 8.0)
 		var inner := r - (5.0 if k % 2 == 0 else 3.0)
-		npc_guard_compass.draw_line(c + d * inner, c + d * r, Color(0.7, 0.7, 0.7), 1.0)
-	npc_guard_compass.draw_string(ThemeDB.fallback_font, c + Vector2(-4, -r + 10), "N",
+		ctl.draw_line(c + d * inner, c + d * r, Color(0.7, 0.7, 0.7), 1.0)
+	ctl.draw_string(ThemeDB.fallback_font, c + Vector2(-4, -r + 10), "N",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color(0.85, 0.85, 0.85))
-	var dir := Vector2.from_angle(deg_to_rad(npc_guard_dir))
+	var dir := Vector2.from_angle(deg_to_rad(deg))
 	var tip := c + dir * (r - 3.0)
 	var col := Color(1.0, 0.8, 0.25)
-	npc_guard_compass.draw_line(c, tip, col, 2.5)
-	npc_guard_compass.draw_colored_polygon(PackedVector2Array([
+	ctl.draw_line(c, tip, col, 2.5)
+	ctl.draw_colored_polygon(PackedVector2Array([
 			tip + dir * 2.0, tip - dir * 6.0 + dir.orthogonal() * 4.0, tip - dir * 6.0 - dir.orthogonal() * 4.0]), col)
-	npc_guard_compass.draw_circle(c, 2.5, col)
+	ctl.draw_circle(c, 2.5, col)
+
+
+## Prop rotation compass: click or drag to set the angle in 15° steps. The value lives in rot_spin
+## (-180..180), which also feeds placement and the selected prop.
+func _on_prop_compass_input(event: InputEvent) -> void:
+	var pressed := event is InputEventMouseButton and (event as InputEventMouseButton).pressed \
+			and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT
+	var dragged := event is InputEventMouseMotion and ((event as InputEventMouseMotion).button_mask & MOUSE_BUTTON_MASK_LEFT) != 0
+	if not (pressed or dragged):
+		return
+	var to: Vector2 = (event as InputEventMouse).position - prop_compass.size * 0.5
+	if to.length() < 3.0:
+		return
+	prop_compass.accept_event()
+	rot_spin.value = wrapf(snappedf(rad_to_deg(to.angle()), 15.0), -180.0, 180.0)  # runs _on_prop_rot
+
+
+func _update_prop_compass() -> void:
+	if prop_compass != null:
+		var deg := fposmod(rot_spin.value, 360.0)
+		prop_compass_lbl.text = "%d° %s" % [roundi(deg), COMPASS_NAMES[int(round(deg / 45.0)) % 8]]
+		prop_compass.queue_redraw()
 
 
 func _on_guard_compass_input(event: InputEvent) -> void:
@@ -2873,6 +2924,7 @@ func _rotate_selected(angle: float) -> void:
 	_refresh_items(list)
 	if sel_kind == "prop":
 		rot_spin.set_value_no_signal(rad_to_deg(float(data["props"][sel_idx]["rot"])))  # keep the Rotate field in step
+		_update_prop_compass()
 	overlay.queue_redraw()
 
 
